@@ -1,0 +1,57 @@
+---
+# SLACK CLASSIFICATION RULES — Channel and keyword matching for triage.
+# Used by scan mode to classify new messages.
+# Works alongside categories.yml (shared) for category definitions.
+
+meta:
+  last_updated: null
+
+# Project prefixes to index in FAQ jira_index (from your Jira instance)
+# Unknown prefixes will be flagged for user confirmation.
+jira_project_prefixes:
+  - PROJ         # Replace with your actual project keys
+  # - FEAT
+  # - OPS
+
+# Channel tier classification
+# Channels not listed here default to NORMAL
+channel_tiers:
+  CRITICAL:
+    - alerts-critical    # Replace with your actual channel names
+    # - incidents
+    # - p0-bugs
+  IMPORTANT:
+    - team-general
+    # - team-standup
+    # - service-requests
+  NORMAL:
+    - announcements
+    # - watercooler
+
+# Keyword-based priority override
+# Overrides channel-derived priority when matched in message text
+keyword_overrides:
+  urgent:
+    - "P0"
+    - "down"
+    - "outage"
+    - "critical"
+  medium:
+    - "question"
+    - "help"
+    - "wondering"
+
+# Category classification rules
+# Evaluated in order; first match wins
+category_rules:
+  - name: bug_from_critical_channel
+    channel_tiers: [CRITICAL]
+    category: bug_triage
+
+  - name: question_detection
+    keywords: ["?", "how do", "what is", "can you", "wondering"]
+    category: question
+
+  - name: fyi_detection
+    keywords: ["FYI", "heads up", "just wanted to share", "letting you know"]
+    category: fyi

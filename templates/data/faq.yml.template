@@ -1,0 +1,32 @@
+---
+# FAQ KNOWLEDGE BASE — Shared between x-slack and x-jira skills.
+# Entries are created automatically by /x-slack faq add or /x-jira.
+# You can also add entries manually following the schema below.
+
+meta:
+  last_updated: null
+  entry_count: 0
+
+# Index of Jira tickets → FAQ entries (populated automatically)
+jira_index: {}
+  # PROJ-123:
+  #   - faq-001
+
+entries: []
+  # Schema for each entry:
+  # - id: faq-001
+  #   topic: category_name         # e.g., auth, onboarding, billing
+  #   question: "Question text"
+  #   answer: "Answer text"        # or null if unanswered
+  #   context: "Additional context about when/why this comes up"
+  #   edge_cases:
+  #     - "Edge case 1"
+  #   related_to:
+  #     - id: faq-002
+  #       strength: 0.8            # 0.0-1.0 semantic similarity
+  #   jira_tickets: []             # e.g., [PROJ-123, PROJ-456]
+  #   source_type: human           # human | agent
+  #   confidence: 0.7              # 0.0-1.0
+  #   times_asked: 1
+  #   date: null
+  #   source_permalink: null

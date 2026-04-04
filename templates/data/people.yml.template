@@ -1,0 +1,20 @@
+---
+# PEOPLE DIRECTORY — Unified identity + relationship tracker
+# Shared between x-slack and x-jira skills.
+# Edit this file to add your team members.
+# Run /x-jira find-user <name> or /x-slack users <name> to look up IDs.
+
+meta:
+  last_updated: null
+
+people:
+  # Add entries here. Key is a stable identifier (snake_case name).
+  # example_person:
+  #   name: Example Person
+  #   slack_id: UXXXXXXXXXX      # From /x-slack users <name>
+  #   jira_id: "712020:xxx-xxx"  # From /x-jira find-user <name>
+  #   roles: [developer]          # e.g., developer, manager, support
+  #   teams: [MYPROJECT]          # Jira project keys they work on
+  #   topics: []                  # Subject areas they handle
+  #   comm_pref: slack_dm         # slack_dm | channel | email
+  #   threads: []                 # Populated automatically by scan mode

@@ -1,0 +1,39 @@
+---
+# SHARED CATEGORIES — Used by both Slack and Jira triage.
+# Add categories that match your team's work types.
+# Keys are referenced in classification-rules.yml and message-tracker.yml.
+
+meta:
+  last_updated: null
+
+categories:
+  bug_triage:
+    description: "Critical bugs from triage channels"
+    default_owner: null
+    owner_action: "monitor and assign"
+
+  service_request:
+    description: "Service requests from support or customers"
+    default_owner: null
+    owner_action: "delegate or handle"
+
+  feature_request:
+    description: "Feature requests or enhancement proposals"
+    default_owner: null
+    owner_action: "log to backlog"
+
+  question:
+    description: "Questions needing an answer or FAQ entry"
+    default_owner: null
+    owner_action: "answer and consider adding to FAQ"
+
+  fyi:
+    description: "Informational updates, no action required"
+    default_owner: null
+    owner_action: "read only"
+
+  # Add your own categories below:
+  # my_category:
+  #   description: "Description of when this applies"
+  #   default_owner: null          # person key from people.yml
+  #   owner_action: "what to do"

@@ -1,0 +1,19 @@
+---
+# MESSAGE TRACKER ARCHIVE — Resolved/stale messages (append-only).
+# Managed automatically by /x-slack archive.
+# Do not edit manually.
+
+meta:
+  created: null
+
+# Archived messages grouped by month (YYYY-MM)
+archive: {}
+  # "2026-01":
+  #   - id: msg-001
+  #     channel: channel-name
+  #     from: UXXXXXXXXXX
+  #     summary: "Brief description"
+  #     date: "2026-01-01"
+  #     archived_at: "2026-01-15"
+  #     final_status: resolved     # resolved | stale
+  #     jira_tickets: []

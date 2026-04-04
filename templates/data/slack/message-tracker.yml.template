@@ -1,0 +1,84 @@
+---
+# MESSAGE TRACKER — Active Slack messages, channels, and triage rules.
+# Populated automatically by /x-slack scan.
+# Configure the channels and triage_rules sections manually.
+
+meta:
+  last_updated: null
+  last_search_window: null        # ISO timestamp of last scan (for incremental scanning)
+  owner_slack_id: UXXXXXXXXXX     # Your Slack user ID — run /x-slack users <your name>
+
+# Channel configuration — add all channels you want to scan
+channels:
+  # Schema:
+  # - id: C0XXXXXXXXX             # Slack channel ID
+  #   name: channel-name          # Without #
+  #   tier: CRITICAL              # CRITICAL | IMPORTANT | NORMAL
+  #   slack_connect: false        # true if this is a Slack Connect (external) channel
+  #   description: "What this channel is for"
+
+  # Examples:
+  # - id: C0XXXXXXXXX
+  #   name: alerts-critical
+  #   tier: CRITICAL
+  #   slack_connect: false
+  #   description: "Critical alerts from monitoring"
+
+  # - id: C0YYYYYYYYY
+  #   name: team-general
+  #   tier: IMPORTANT
+  #   slack_connect: false
+  #   description: "Main team channel"
+
+  # - id: C0ZZZZZZZZZ
+  #   name: announcements
+  #   tier: NORMAL
+  #   slack_connect: false
+  #   description: "Company announcements"
+
+# Triage rules — determine suggested_owner for classified messages
+# Rules are evaluated in order; first match wins.
+triage_rules:
+  # Schema:
+  # - name: rule_name
+  #   conditions:
+  #     channel: channel-name     # (optional) match by channel name
+  #     category: bug_triage      # (optional) match by category
+  #     keyword: "search term"    # (optional) match by keyword in summary
+  #   suggested_owner: person_key # Key from people.yml
+  #   confidence: high            # high | medium | low
+  #   confirmed_count: 0          # Auto-incremented on user confirmation
+
+  # Example:
+  # - name: critical_bugs_to_lead
+  #   conditions:
+  #     category: bug_triage
+  #     channel: alerts-critical
+  #   suggested_owner: team_lead
+  #   confidence: high
+  #   confirmed_count: 0
+
+# Active messages (populated by scan mode)
+messages: []
+  # Schema:
+  # - id: msg-001
+  #   channel: channel-name
+  #   channel_id: C0XXXXXXXXX
+  #   from: UXXXXXXXXXX           # Sender's Slack user ID
+  #   summary: "Brief description"
+  #   permalink: "https://..."
+  #   date: "2026-01-01"
+  #   timestamp: "1234567890.123456"
+  #   thread_ts: null             # If this is a thread reply
+  #   status: pending             # pending | resolved | follow_up | action_needed | stale
+  #   priority: medium            # urgent | critical | medium | low
+  #   category: bug_triage        # From categories.yml
+  #   suggested_owner: null       # From triage_rules
+  #   jira_tickets: []            # Linked Jira keys
+  #   slack_connect: false        # From channel config
+
+# Jira ticket → message cross-reference (populated by link mode)
+jira_tickets: {}
+  # PROJ-123:
+  #   messages: [msg-001]
+  #   faq_entries: []
