@@ -49,7 +49,8 @@ Get-ChildItem "templates\data\slack\*.template" | ForEach-Object {
     }
 }
 
-# 6. Install skill
+# 6. Install skill (remove-and-recopy for clean updates)
+if (Test-Path $SkillDir) { Remove-Item $SkillDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
 Copy-Item ".claude\skills\$SkillName\*" $SkillDir -Force
 Write-Host "OK Skill installed: $SkillDir" -ForegroundColor Green

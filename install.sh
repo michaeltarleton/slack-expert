@@ -49,7 +49,8 @@ for f in templates/data/slack/*.template; do
   fi
 done
 
-# 6. Install skill
+# 6. Install skill (remove-and-recopy for clean updates)
+rm -rf "$SKILL_DIR"
 mkdir -p "$SKILL_DIR"
 cp .claude/skills/$SKILL_NAME/* "$SKILL_DIR/"
 echo "✓ Skill installed: $SKILL_DIR"
