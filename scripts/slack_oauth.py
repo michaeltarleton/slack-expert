@@ -48,15 +48,10 @@ REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
 AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 TOKEN_URL = "https://slack.com/api/oauth.v2.access"
 
-# All scopes needed for x-slack modes (read, send, reply, search, download).
-USER_SCOPES = (
-    "channels:read,channels:history,"
-    "groups:read,groups:history,"
-    "im:read,im:history,"
-    "mpim:read,mpim:history,"
-    "users:read,search:read,"
-    "chat:write,files:read"
-)
+# The official Slack MCP app (public client) only allows files:read as a user scope.
+# For broader scopes (channels, messages, search, send), create your own Slack app
+# and pass --client-id / --client-secret.
+USER_SCOPES = "files:read"
 
 # ---------------------------------------------------------------------------
 # PKCE helpers
