@@ -97,73 +97,50 @@ def detect_type(path: str, hint: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 def html_to_markdown(path: str) -> str:
+    """
+    Convert HTML to clean markdown using html2text (primary) with BeautifulSoup
+    pre-processing to strip noise and de-duplicate repeated content.
+    """
+    import re
+
+    try:
+        import html2text as _h2t
+    except ImportError:
+        _fail(1, "html2text not installed: pip install html2text")
+
     try:
         from bs4 import BeautifulSoup
     except ImportError:
         _fail(1, "beautifulsoup4 not installed: pip install beautifulsoup4")
 
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        html = f.read()
+        raw = f.read()
 
-    soup = BeautifulSoup(html, "html.parser")
+    # --- Pre-process with BS4 ---
+    soup = BeautifulSoup(raw, "html.parser")
 
-    # Remove noise tags
-    for tag in soup(["script", "style", "head", "meta", "link", "noscript"]):
+    # Strip noise
+    for tag in soup(["script", "style", "head", "meta", "link", "noscript", "img"]):
         tag.decompose()
 
-    lines: list[str] = []
+    # Replace <div> with <p> so html2text treats them as block elements
+    for div in soup.find_all("div"):
+        div.name = "p"
 
-    def _process(tag) -> str:
-        """Recursively convert a tag to markdown text."""
-        if tag.name is None:
-            # NavigableString
-            return str(tag)
+    cleaned_html = str(soup)
 
-        name = tag.name.lower()
-        children_text = "".join(_process(c) for c in tag.children)
+    # --- Convert with html2text ---
+    h = _h2t.HTML2Text()
+    h.ignore_links = True        # email links are noise
+    h.ignore_images = True
+    h.body_width = 0             # no line-wrapping
+    h.unicode_snob = True
+    h.ignore_tables = True       # email HTML uses tables for layout — extract as text
+    h.single_line_break = False
 
-        if name in ("h1",): return f"\n# {children_text.strip()}\n"
-        if name in ("h2",): return f"\n## {children_text.strip()}\n"
-        if name in ("h3",): return f"\n### {children_text.strip()}\n"
-        if name in ("h4",): return f"\n#### {children_text.strip()}\n"
-        if name in ("h5", "h6"): return f"\n##### {children_text.strip()}\n"
-        if name in ("b", "strong"): return f"**{children_text}**"
-        if name in ("i", "em"): return f"*{children_text}*"
-        if name == "a":
-            href = tag.get("href", "")
-            return f"[{children_text}]({href})" if href else children_text
-        if name in ("li",): return f"\n- {children_text.strip()}"
-        if name in ("br",): return "\n"
-        if name in ("p", "div"): return f"\n\n{children_text}\n\n"
-        if name == "tr":
-            cells = [td.get_text(strip=True) for td in tag.find_all(["td", "th"])]
-            return "| " + " | ".join(cells) + " |"
-        if name == "table":
-            rows = tag.find_all("tr")
-            if not rows:
-                return children_text
-            md_rows: list[str] = []
-            for i, row in enumerate(rows):
-                cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
-                md_rows.append("| " + " | ".join(cells) + " |")
-                if i == 0:
-                    md_rows.append("| " + " | ".join(["---"] * len(cells)) + " |")
-            return "\n" + "\n".join(md_rows) + "\n"
-        if name in ("thead", "tbody", "tfoot"): return children_text
-        if name in ("ul", "ol"): return f"\n{children_text}\n"
-        if name == "blockquote": return f"\n> {children_text.strip()}\n"
-        if name == "hr": return "\n---\n"
-        if name == "pre": return f"\n```\n{tag.get_text()}\n```\n"
-        if name == "code" and tag.parent and tag.parent.name != "pre":
-            return f"`{children_text}`"
+    md = h.handle(cleaned_html)
 
-        return children_text
-
-    body = soup.find("body") or soup
-    md = _process(body)
-
-    # Normalize whitespace
-    import re
+    # Normalize: collapse 3+ blank lines → 2, strip leading/trailing whitespace
     md = re.sub(r"\n{3,}", "\n\n", md).strip()
     return md
 
