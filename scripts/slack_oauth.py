@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """
-One-time Slack OAuth setup for the x-slack download mode.
+One-time Slack OAuth setup for the x-slack skill.
 
-Usage:
+Uses the official Slack MCP app (public client — no client secret needed).
+Token is saved to ~/.claude/companies/{company}/data/slack/token.json and
+is auto-discovered by scripts/download_slack_file.py.
+
+Usage (default — uses official Slack MCP client ID):
+    python scripts/slack_oauth.py
+    python scripts/slack_oauth.py --company acme
+
+Usage (custom Slack app — requires your own client ID + secret):
     python scripts/slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET
-    python scripts/slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET --company acme
 
 After running:
     - Token saved to ~/.claude/companies/{company}/data/slack/token.json
-    - Sourceable env file written to ~/.claude/companies/{company}/data/slack/slack-env.sh
-    - Add to your shell profile: source ~/.claude/companies/amira/data/slack/slack-env.sh
-
-The token works for:
-    - python scripts/download_slack_file.py (auto-reads token.json)
-    - SLACK_BOT_TOKEN env var (if you source the env file)
+    - Sourceable env file at ~/.claude/companies/{company}/data/slack/slack-env.sh
 """
 import argparse
+import base64
+import hashlib
 import http.server
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -31,7 +36,19 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SCOPES = ""                        # bot scopes (none — we use user scopes)
+# Official Slack MCP app — public client, PKCE only, no client secret.
+# Client ID from ~/.mcp.json (Slack's hosted MCP server at mcp.slack.com/mcp).
+OFFICIAL_CLIENT_ID = "1601185624273.8899143856786"
+
+# Port 3118 is registered as redirect URI for the official Slack MCP app.
+# Use the same port so Slack accepts our redirect URI.
+REDIRECT_PORT = 3118
+REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
+
+AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
+TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+
+# All scopes needed for x-slack modes (read, send, reply, search, download).
 USER_SCOPES = (
     "channels:read,channels:history,"
     "groups:read,groups:history,"
@@ -39,17 +56,22 @@ USER_SCOPES = (
     "mpim:read,mpim:history,"
     "users:read,search:read,"
     "chat:write,files:read"
-)  # user token scopes — covers all x-slack modes (read, send, reply, search, download)
-REDIRECT_PORT = 3119               # distinct from port 3118 used by official Slack MCP
-REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
-AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
-TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+)
+
+# ---------------------------------------------------------------------------
+# PKCE helpers
+# ---------------------------------------------------------------------------
+def _pkce_pair() -> tuple[str, str]:
+    """Return (code_verifier, code_challenge) for PKCE S256."""
+    code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(48)).rstrip(b"=").decode("ascii")
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return code_verifier, code_challenge
 
 # ---------------------------------------------------------------------------
 # OAuth callback HTTP handler
 # ---------------------------------------------------------------------------
 _auth_result: dict = {}
-_server_ready = threading.Event()
 
 
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
@@ -75,7 +97,6 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             _auth_result["error"] = "No code or error in callback"
             self._respond(400, "<h1>Unexpected callback</h1><p>No code received.</p>")
 
-        # Signal the main thread we're done
         threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     def _respond(self, status: int, body: str):
@@ -98,8 +119,30 @@ def _start_callback_server() -> http.server.HTTPServer:
     return server
 
 
-def _exchange_code(code: str, client_id: str, client_secret: str) -> dict:
-    """Exchange authorization code for access token."""
+def _exchange_code_pkce(code: str, code_verifier: str, client_id: str) -> dict:
+    """Exchange authorization code for token using PKCE (no client secret)."""
+    data = urllib.parse.urlencode({
+        "code": code,
+        "client_id": client_id,
+        "code_verifier": code_verifier,
+        "redirect_uri": REDIRECT_URI,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        TOKEN_URL,
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _exchange_code_secret(code: str, client_id: str, client_secret: str) -> dict:
+    """Exchange authorization code for token using client secret (custom apps)."""
     data = urllib.parse.urlencode({
         "code": code,
         "client_id": client_id,
@@ -125,13 +168,11 @@ def _save_token(token_data: dict, company: str) -> tuple[Path, Path]:
     data_dir = Path.home() / ".claude" / "companies" / company / "data" / "slack"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # token.json
     token_file = data_dir / "token.json"
     with open(token_file, "w", encoding="utf-8") as f:
         json.dump(token_data, f, indent=2)
     os.chmod(token_file, 0o600)
 
-    # slack-env.sh (sourceable)
     user_token = token_data.get("user_token", "")
     bot_token = token_data.get("bot_token", "")
     primary = user_token or bot_token
@@ -143,7 +184,6 @@ def _save_token(token_data: dict, company: str) -> tuple[Path, Path]:
             f.write(f'export SLACK_USER_TOKEN="{user_token}"\n')
         if bot_token:
             f.write(f'export SLACK_BOT_TOKEN="{bot_token}"\n')
-        # SLACK_TOKEN is the generic fallback used by download_slack_file.py
         f.write(f'export SLACK_TOKEN="{primary}"\n')
     os.chmod(env_file, 0o600)
 
@@ -157,47 +197,75 @@ def _port_in_use(port: int) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Authenticate with Slack via OAuth and store token for x-slack download mode"
+        description="Authenticate with Slack via OAuth and store token for x-slack"
     )
-    parser.add_argument("--client-id", required=True, help="Slack app Client ID")
-    parser.add_argument("--client-secret", required=True, help="Slack app Client Secret")
+    parser.add_argument(
+        "--client-id",
+        default=OFFICIAL_CLIENT_ID,
+        help=f"Slack app Client ID (default: official Slack MCP app {OFFICIAL_CLIENT_ID})",
+    )
+    parser.add_argument(
+        "--client-secret",
+        default="",
+        help="Slack app Client Secret (only required for custom apps; omit for official Slack MCP)",
+    )
     parser.add_argument("--company", default="amira", help="Company name (default: amira)")
-    parser.add_argument("--scopes", default=USER_SCOPES,
-                        help=f"User token scopes (default: {USER_SCOPES})")
+    parser.add_argument(
+        "--scopes",
+        default=USER_SCOPES,
+        help=f"User token scopes (default covers all x-slack modes)",
+    )
     args = parser.parse_args()
 
+    using_official = args.client_id == OFFICIAL_CLIENT_ID
+
     if _port_in_use(REDIRECT_PORT):
-        print(f"ERROR: Port {REDIRECT_PORT} is already in use. "
-              f"Stop any process using it and try again.", file=sys.stderr)
+        print(
+            f"ERROR: Port {REDIRECT_PORT} is already in use.\n"
+            f"  If Claude Code's Slack MCP is connected, disconnect it first,\n"
+            f"  then run this script, then reconnect.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    # 1. Start local callback server
+    # Generate PKCE pair (always — official app requires it; custom apps ignore code_verifier)
+    code_verifier, code_challenge = _pkce_pair()
+
+    # Start local callback server
     server = _start_callback_server()
 
-    # 2. Build authorization URL
-    auth_params = urllib.parse.urlencode({
+    # Build authorization URL
+    auth_params: dict = {
         "client_id": args.client_id,
         "user_scope": args.scopes,
         "redirect_uri": REDIRECT_URI,
-    })
-    auth_url = f"{AUTHORIZE_URL}?{auth_params}"
+    }
+    if using_official:
+        # Official Slack MCP app uses PKCE
+        auth_params["code_challenge"] = code_challenge
+        auth_params["code_challenge_method"] = "S256"
+
+    auth_url = f"{AUTHORIZE_URL}?{urllib.parse.urlencode(auth_params)}"
 
     print("=" * 60)
-    print("Slack OAuth Setup — x-slack download mode")
+    print("Slack OAuth Setup — x-slack")
+    if using_official:
+        print("Using official Slack MCP app (PKCE — no client secret needed)")
+    else:
+        print(f"Using custom app: {args.client_id}")
     print("=" * 60)
     print()
     print("Opening browser to authorize Slack access...")
     print()
-    print(f"If browser does not open, visit this URL manually:")
+    print("If browser does not open, visit this URL manually:")
     print(f"  {auth_url}")
     print()
     print("Waiting for authorization... (Ctrl+C to cancel)")
 
     webbrowser.open(auth_url)
 
-    # 3. Wait for callback (server shuts itself down after callback)
-    server._BaseServer__shutdown_request = False
-    server.serve_forever()  # blocks until callback handler calls shutdown()
+    # Block until callback handler shuts down the server
+    server.serve_forever()
 
     if "error" in _auth_result:
         print(f"\nERROR: OAuth failed: {_auth_result['error']}", file=sys.stderr)
@@ -209,17 +277,27 @@ def main() -> None:
 
     print("Authorization code received. Exchanging for token...")
 
-    # 4. Exchange code for token
-    token_resp = _exchange_code(_auth_result["code"], args.client_id, args.client_secret)
+    # Exchange code for token
+    if using_official or not args.client_secret:
+        token_resp = _exchange_code_pkce(_auth_result["code"], code_verifier, args.client_id)
+    else:
+        token_resp = _exchange_code_secret(_auth_result["code"], args.client_id, args.client_secret)
 
     if not token_resp.get("ok"):
         error = token_resp.get("error", "unknown")
         print(f"\nERROR: Token exchange failed: {error}", file=sys.stderr)
+        if error == "invalid_redirect_uri":
+            print(
+                "  The redirect URI is not registered for this client ID.\n"
+                "  If using a custom app, ensure http://localhost:3118/callback\n"
+                "  is added to your Slack app's OAuth redirect URIs.",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
-    # 5. Extract tokens
+    # Extract tokens
     user_token = (token_resp.get("authed_user") or {}).get("access_token", "")
-    bot_token = token_resp.get("access_token", "")  # bot token (if bot scopes requested)
+    bot_token = token_resp.get("access_token", "")
 
     token_data = {
         "ok": True,
@@ -230,9 +308,9 @@ def main() -> None:
         "team_name": (token_resp.get("team") or {}).get("name", ""),
         "scopes": (token_resp.get("authed_user") or {}).get("scope", args.scopes),
         "obtained_at": datetime.now(timezone.utc).isoformat(),
+        "client_id": args.client_id,
     }
 
-    # 6. Save token
     token_file, env_file = _save_token(token_data, args.company)
 
     print()
@@ -249,7 +327,7 @@ def main() -> None:
         masked = bot_token[:12] + "..." + bot_token[-4:]
         print(f"  Bot token:   {masked}")
     print()
-    print("The x-slack download mode will automatically use the stored token.")
+    print("The x-slack skill will automatically use the stored token.")
     print()
     print("Optional — add to your shell profile (~/.bashrc or ~/.zprofile):")
     print(f'  source "{env_file}"')
