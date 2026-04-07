@@ -1,6 +1,6 @@
 # Modes Reference — x-slack
 
-All 17 modes with descriptions, syntax, and examples.
+All 18 modes with descriptions, syntax, and examples.
 
 ## Quick Reference
 
@@ -11,6 +11,7 @@ All 17 modes with descriptions, syntax, and examples.
 | `thread` | `/x-slack thread <channel> <ts> [reply]` | No | Yes |
 | `channels` | `/x-slack channels [search]` | No | Yes |
 | `users` | `/x-slack users [name_or_id]` | No | Yes |
+| `download` | `/x-slack download <url\|file_id>` | No | Yes |
 | `scan` | `/x-slack scan` | Yes | No |
 | `status` | `/x-slack status` | No | No |
 | `archive` | `/x-slack archive` | Yes | No |
@@ -85,6 +86,25 @@ Look up Slack users.
 /x-slack users Alice            # Search for Alice
 /x-slack users UXXXXXXXXXX      # Profile for specific user ID
 ```
+
+---
+
+---
+
+### download
+
+Download a file attachment from a Slack message and convert to markdown.
+
+```
+/x-slack download https://amiralearning.slack.com/archives/C07.../p1774...    # By message URL
+/x-slack download F07XXXXXX                                                    # By file ID
+/x-slack download F07XXXXXX --invalidate                                       # Force re-download
+/x-slack download --channel C07XXXXXX --latest                                 # Most recent file
+```
+
+Supports HTML, PDF, Excel, CSV, plain text, JSON, and images (via Haiku OCR). Caches markdown for 72 hours at `~/.claude/companies/{company}/data/slack/downloads/`.
+
+Token is read automatically from `~/.claude/companies/{company}/data/slack/token.json` (set up via `python scripts/slack_oauth.py`).
 
 ---
 

@@ -55,11 +55,25 @@ mkdir -p "$SKILL_DIR"
 cp .claude/skills/$SKILL_NAME/* "$SKILL_DIR/"
 echo "✓ Skill installed: $SKILL_DIR"
 
+# 7. Copy scripts directory
+SCRIPTS_DIR="$HOME/.claude/skills/$SKILL_NAME/scripts"
+rm -rf "$SCRIPTS_DIR"
+cp -r scripts "$SCRIPTS_DIR"
+echo "✓ Scripts installed: $SCRIPTS_DIR"
+
+# 8. Create download cache directory
+DOWNLOADS_DIR="$SLACK_DATA_DIR/downloads"
+mkdir -p "$DOWNLOADS_DIR"
+chmod 700 "$DOWNLOADS_DIR"
+echo "✓ Download cache: $DOWNLOADS_DIR"
+
 echo ""
 echo "=== Installation complete ==="
 echo ""
 echo "Next steps:"
 echo "  1. Configure Slack MCP OAuth — see docs/setup.md"
-echo "  2. Edit $DATA_DIR/people.yml with your team"
-echo "  3. Edit $SLACK_DATA_DIR/message-tracker.yml with your channels"
-echo "  4. Run: /x-slack help"
+echo "  2. Run OAuth setup for download mode:"
+echo "     python $SCRIPTS_DIR/slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET --company $COMPANY"
+echo "  3. Edit $DATA_DIR/people.yml with your team"
+echo "  4. Edit $SLACK_DATA_DIR/message-tracker.yml with your channels"
+echo "  5. Run: /x-slack help"

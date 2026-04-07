@@ -93,6 +93,20 @@ Returns:
 }
 ```
 
+### From /x-new-product-mapping
+
+When a Slack message contains a file attachment (email-to-channel forwarding):
+
+```
+# Download forwarded email attachment — returns markdown content
+/x-slack download <slack_message_url> --json --quiet
+
+# Pipe content to product parser
+/x-new-product-mapping <content>
+```
+
+Token is read automatically from `token.json` (set up via `python scripts/slack_oauth.py` — no env var needed).
+
 ## Advanced: Spawning the Full Agent
 
 Only spawn the full agent when you need **live Slack scanning** — fresh data from channels not yet in the tracker.

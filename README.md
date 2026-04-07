@@ -4,7 +4,8 @@ Unified Slack interface for Claude Code — messaging, channel/user management, 
 
 ## Features
 
-- **17 modes**: send, read, thread, channels, users, scan, status, archive, faq, faq add, reply, search, context, update, link, who, help
+- **18 modes**: send, read, thread, channels, users, download, scan, status, archive, faq, faq add, reply, search, context, update, link, who, help
+- **File download**: fetch Slack file attachments, convert to markdown, 72h cache — HTML, PDF, Excel, CSV, images (OCR)
 - **Priority-tier scanning**: CRITICAL → IMPORTANT → NORMAL
 - **Response tracking**: message-tracker with archive lifecycle
 - **FAQ knowledge base**: dedup, relation scoring, Jira cross-reference
@@ -69,7 +70,7 @@ See [docs/setup.md](docs/setup.md) for detailed configuration.
 
 ## Docs
 
-- [Setup Guide](docs/setup.md)
+- [Setup Guide](docs/setup.md) — includes OAuth setup for download mode
 - [All Modes](docs/modes.md)
 - [Agent Integration](docs/agent-integration.md)
 
@@ -83,5 +84,10 @@ See [docs/setup.md](docs/setup.md) for detailed configuration.
 └── slack/
     ├── message-tracker.yml           # Active messages, channels, triage rules
     ├── message-tracker-archive.yml   # Resolved messages (append-only)
-    └── classification-rules.yml      # Slack triage rules
+    ├── classification-rules.yml      # Slack triage rules
+    ├── token.json                    # OAuth token (written by slack_oauth.py)
+    ├── slack-env.sh                  # Sourceable env file (written by slack_oauth.py)
+    └── downloads/                    # File download cache (72h TTL)
+        ├── F07XXXXXX.md              # Converted markdown content
+        └── F07XXXXXX.meta.json       # Cache metadata + expiry
 ```

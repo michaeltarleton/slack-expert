@@ -37,8 +37,36 @@ Add the Slack MCP server to your project's `.mcp.json`:
 To get a Slack App Client ID:
 1. Go to [api.slack.com/apps](https://api.slack.com/apps)
 2. Create a new app (or use an existing one)
-3. Configure OAuth scopes: `channels:read`, `channels:history`, `groups:read`, `groups:history`, `im:read`, `im:history`, `mpim:read`, `mpim:history`, `users:read`, `search:read`, `chat:write`
+3. Configure OAuth scopes: `channels:read`, `channels:history`, `groups:read`, `groups:history`, `im:read`, `im:history`, `mpim:read`, `mpim:history`, `users:read`, `search:read`, `chat:write`, `files:read`
 4. Copy the Client ID
+
+## Step 2.5: Authenticate for Download Mode (OAuth)
+
+The `download` mode requires direct Slack Web API access for file downloads. Run the one-time OAuth setup:
+
+```bash
+python scripts/slack_oauth.py \
+  --client-id YOUR_SLACK_APP_CLIENT_ID \
+  --client-secret YOUR_SLACK_APP_CLIENT_SECRET \
+  --company amira
+```
+
+This will:
+1. Open your browser to Slack's authorization page
+2. Request all scopes needed by x-slack (read, send, reply, search, download)
+3. Save the token to `~/.claude/companies/amira/data/slack/token.json`
+4. Write a sourceable env file at `~/.claude/companies/amira/data/slack/slack-env.sh`
+
+**The download mode will automatically find and use the saved token** — no env var configuration needed.
+
+Optional — for tools outside Claude Code that need the token:
+```bash
+source ~/.claude/companies/amira/data/slack/slack-env.sh
+```
+
+Or add that line to your `~/.bashrc` / `~/.zprofile` for persistence.
+
+**Slack app requirements**: Use the same app as Step 2. Ensure `files:read` scope is included (added to Step 2 scope list above). The app redirect URI must include `http://localhost:3119/callback`.
 
 ## Step 3: Configure Your Data Files
 
@@ -96,7 +124,7 @@ Configure your channel tiers and keyword rules for auto-classification.
 /x-slack help
 ```
 
-Should list all 17 modes.
+Should list all 18 modes.
 
 ## Step 5: First Scan
 

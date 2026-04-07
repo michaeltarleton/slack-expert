@@ -55,11 +55,24 @@ New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
 Copy-Item ".claude\skills\$SkillName\*" $SkillDir -Force
 Write-Host "OK Skill installed: $SkillDir" -ForegroundColor Green
 
+# 7. Copy scripts directory
+$ScriptsDir = "$SkillDir\scripts"
+if (Test-Path $ScriptsDir) { Remove-Item $ScriptsDir -Recurse -Force }
+Copy-Item -Recurse "scripts" $ScriptsDir -Force
+Write-Host "OK Scripts installed: $ScriptsDir" -ForegroundColor Green
+
+# 8. Create download cache directory
+$DownloadsDir = "$SlackDataDir\downloads"
+New-Item -ItemType Directory -Force -Path $DownloadsDir | Out-Null
+Write-Host "OK Download cache: $DownloadsDir" -ForegroundColor Green
+
 Write-Host ""
 Write-Host "=== Installation complete ===" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1. Configure Slack MCP OAuth — see docs/setup.md"
-Write-Host "  2. Edit $DataDir\people.yml with your team"
-Write-Host "  3. Edit $SlackDataDir\message-tracker.yml with your channels"
-Write-Host "  4. Run: /x-slack help"
+Write-Host "  2. Run OAuth setup for download mode:"
+Write-Host "     python $ScriptsDir\slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET --company $Company"
+Write-Host "  3. Edit $DataDir\people.yml with your team"
+Write-Host "  4. Edit $SlackDataDir\message-tracker.yml with your channels"
+Write-Host "  5. Run: /x-slack help"
