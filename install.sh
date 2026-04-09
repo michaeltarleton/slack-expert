@@ -55,7 +55,12 @@ mkdir -p "$SKILL_DIR"
 cp .claude/skills/$SKILL_NAME/* "$SKILL_DIR/"
 echo "✓ Skill installed: $SKILL_DIR"
 
-# 7. Copy scripts directory
+# 7. Install Python dependencies for download mode
+echo "Installing Python dependencies..."
+python3 -m pip install --quiet beautifulsoup4 pymupdf openpyxl html2text 2>&1 | tail -3
+echo "✓ Python dependencies installed"
+
+# 8. Copy scripts directory
 SCRIPTS_DIR="$HOME/.claude/skills/$SKILL_NAME/scripts"
 rm -rf "$SCRIPTS_DIR"
 cp -r scripts "$SCRIPTS_DIR"

@@ -275,7 +275,7 @@ def json_to_markdown(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 MIME_DISPATCH: dict[str, tuple[callable, str]] = {
-    "text/html": (html_to_markdown, "beautifulsoup4"),
+    "text/html": (html_to_markdown, "html2text"),
     "application/pdf": (pdf_to_markdown, "pymupdf"),
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": (xlsx_to_markdown, "openpyxl"),
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (docx_to_markdown, "pymupdf"),

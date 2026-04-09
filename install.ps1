@@ -55,7 +55,12 @@ New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
 Copy-Item ".claude\skills\$SkillName\*" $SkillDir -Force
 Write-Host "OK Skill installed: $SkillDir" -ForegroundColor Green
 
-# 7. Copy scripts directory
+# 7. Install Python dependencies for download mode
+Write-Host "Installing Python dependencies..."
+python -m pip install --quiet beautifulsoup4 pymupdf openpyxl html2text 2>&1 | Select-Object -Last 3
+Write-Host "OK Python dependencies installed" -ForegroundColor Green
+
+# 8. Copy scripts directory
 $ScriptsDir = "$SkillDir\scripts"
 if (Test-Path $ScriptsDir) { Remove-Item $ScriptsDir -Recurse -Force }
 Copy-Item -Recurse "scripts" $ScriptsDir -Force
