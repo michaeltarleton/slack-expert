@@ -39,17 +39,17 @@ The installer will:
 1. Prompt for your company name
 2. Create `~/.claude/companies/{company}/data/slack/`
 3. Copy template data files (never overwrites existing data)
-4. Install the skill to `~/.claude/skills/x-slack/`
+4. Install the skill to `~/.claude/skills/slack/`
 
 ## Quick Start
 
 ```
-/x-slack scan              # Full channel sweep
-/x-slack status            # Show active tracker items
-/x-slack read #general     # Read recent messages
-/x-slack send #general "Hello team"
-/x-slack faq onboarding    # Search FAQ
-/x-slack help              # All modes
+/slack scan              # Full channel sweep
+/slack status            # Show active tracker items
+/slack read #general     # Read recent messages
+/slack send #general "Hello team"
+/slack faq onboarding    # Search FAQ
+/slack help              # All modes
 ```
 
 ## Configuration

@@ -1,0 +1,1044 @@
+---
+name: x-slack
+description: Unified Slack interface — send/read messages, manage channels/users, download file attachments, triage by priority tier, track responses, manage FAQ knowledge base, and suggest routing. Use for any Slack operation, triage, or when other skills need Slack context.
+user_invocable: true
+args: "[send|read|thread|channels|users|download|scan|status|archive|faq|faq add|reply|search|context|update|link|who|help] [args...] [--json --quiet]"
+---
+
+# Slack
+
+Unified Slack interface: messaging, channel/user management, triage, response tracking, and institutional knowledge.
+
+## Table of Contents
+- [Argument Parsing](#argument-parsing)
+- [Global Flags](#global-flags)
+- [Data Files](#data-files)
+- [Critical Rules](#critical-rules)
+- [Messaging Modes](#messaging-modes)
+- [Mode: Download](#mode-download)
+- [Mode: Scan](#mode-scan)
+- [Mode: Status](#mode-status)
+- [Mode: Archive](#mode-archive)
+- [Mode: FAQ](#mode-faq)
+- [Mode: FAQ Add](#mode-faq-add)
+- [Mode: Reply](#mode-reply)
+- [Mode: Search](#mode-search)
+- [Mode: Context](#mode-context)
+- [Mode: Update](#mode-update)
+- [Mode: Link](#mode-link)
+- [Mode: Who](#mode-who)
+- [Mode: Help](#mode-help)
+- [Output Format](#output-format)
+- [JSON Output Format](#json-output-format)
+- [Triage Classification](#triage-classification)
+- [FAQ Matching](#faq-matching)
+- [Agent Spawning](#agent-spawning)
+- [Cross-Skill Integration](#cross-skill-integration)
+
+## Argument Parsing
+
+### Messaging Modes
+
+| Input | Mode | Agent-friendly |
+|-------|------|----------------|
+| `send <channel> <message>` | Send — post message to channel | Yes |
+| `read <channel> [count]` | Read — fetch recent messages (default 10) | Yes |
+| `thread <channel> <ts> [reply]` | Thread — read thread or reply to it | Yes |
+| `channels [search]` | Channels — list/search channels | Yes |
+| `users [name_or_id]` | Users — list/search users or view profile | Yes |
+| `download <url\|file_id> [--invalidate]` | Download — fetch file content from message attachment | Yes |
+
+### Triage Modes
+
+| Input | Mode | Agent-friendly |
+|-------|------|----------------|
+| (empty) or `scan` | Scan — full channel sweep | |
+| `status` | Status — show active tracker items | |
+| `archive` | Archive — prompt for stale item decisions | |
+| `faq <term>` | FAQ — search knowledge base | Yes |
+| `faq add <topic> <question> <answer>` | FAQ Add — create new entry | Yes |
+| `reply <msg-id> <text>` | Reply — respond to a tracked message | |
+| `search <term>` | Search — find messages by keyword/ticket/person | Yes |
+| `context <JIRA-KEY>` | Context — Jira ticket → Slack messages + FAQ | Yes |
+| `update <msg-id> <field> <value>` | Update — change message field programmatically | Yes |
+| `link <msg-id> <JIRA-KEY>` | Link — connect message to Jira ticket | Yes |
+| `who <person>` | Who — pending items for/from a person | Yes |
+| `help [mode]` | Help — list all modes with descriptions | Yes |
+
+## Global Flags
+
+### `--json --quiet`
+
+When present, ALL output switches to machine-readable JSON. No markdown, no numbered lists, no prose.
+
+**Detection**: Check if the raw input string contains `--json` or `--quiet`. Strip flags before parsing the mode argument.
+
+**Behavior**:
+- Suppress all human-friendly formatting (headers, bullets, FAQ match prose)
+- Return a single JSON object to stdout
+- Agents should ALWAYS pass `--json --quiet` when spawning this skill programmatically
+
+**JSON envelope** (wraps every mode's output):
+```json
+{
+  "mode": "search|context|status|...",
+  "ok": true,
+  "count": 3,
+  "results": [ ... ],
+  "errors": []
+}
+```
+
+- `ok`: false if the mode encountered errors (missing msg-id, no matches, etc.)
+- `count`: number of items in results
+- `errors`: array of error strings (empty on success)
+- `results`: mode-specific array (see JSON Output Format section)
+
+## Data Files
+
+Data files are company-scoped and live outside the skill directory for portability.
+
+**Path**: `~/.claude/companies/{company}/data/`
+
+**Company resolution**: Determined from the current working directory. See `CLAUDE.md` in this repo.
+
+Slack-specific files: `~/.claude/companies/{company}/data/slack/`
+
+**Shared** (`~/.claude/companies/{company}/data/`):
+
+| File | Purpose |
+|------|---------|
+| `people.yml` | Unified identity directory — Slack/Jira ID mapping, per-person threads, directional status, follow-up dates |
+| `faq.yml` | Q&A knowledge base with edge cases, relations, jira index |
+| `categories.yml` | Shared category definitions used by both Slack and Jira triage |
+
+**Slack-specific** (`~/.claude/companies/{company}/data/slack/`):
+
+| File | Purpose |
+|------|---------|
+| `message-tracker.yml` | Active messages, channels, message metadata |
+| `message-tracker-archive.yml` | Resolved/stale messages (append-only, grouped by month) |
+| `classification-rules.yml` | Slack-specific triage rules (channel/keyword matching → category) |
+
+**Loading strategy:**
+- `message-tracker.yml` — every invocation (messages, channels)
+- `classification-rules.yml` — scan mode (classifying new messages)
+- `categories.yml` — scan mode (category definitions)
+- `people.yml` — modes needing identity resolution (`who`, `search`, `scan`, `reply`)
+- `faq.yml` — knowledge lookups (`faq`, `search`, `context`, `faq add`)
+
+**First-run bootstrap**: If the data directory doesn't exist, create it and scaffold empty templates with the correct schema. Prompt the user to configure their channel tiers and people.
+
+## Critical Rules
+
+These are non-negotiable. Violating them causes incorrect results.
+
+### Input Validation
+
+Validate before processing. Reject with `ok: false` and descriptive error.
+
+| Input type | Pattern | Max length |
+|-----------|---------|------------|
+| `msg-id` | `^msg-\d{3,6}$` | 10 |
+| `JIRA-KEY` | `^[a-zA-Z]{2,12}-\d{1,7}$` (normalize to uppercase) | 20 |
+| `search/faq/who term` | Free text | 200 |
+| `reply text` | Free text | 4000 |
+| `faq add` topic / question / answer | Free text | 100 / 500 / 2000 |
+| `follow_up_reason` | Free text | 500 |
+| `file_id` | `^F[A-Z0-9]{8,12}$` | 15 |
+| `slack_url` | `^https://[\w.-]+\.slack\.com/archives/[CDG][A-Z0-9]+/p\d{16}` | 200 |
+
+Jira key extraction from answer text: use `\b[a-zA-Z]{2,12}-\d{1,7}\b` (anchored), normalize to uppercase. Only index keys matching project prefixes configured in your company's `classification-rules.yml`. Flag unknown prefixes for user confirmation.
+
+### Response Checking
+For EVERY message, run BOTH checks IN PARALLEL before marking response status:
+1. `mcp__slack__slack_read_thread` — check thread replies
+2. `mcp__slack__slack_read_channel` — check channel messages around the timestamp
+
+NEVER mark a message as unresponded based on thread check alone. DMs and group DMs typically use channel-level replies, not threads.
+
+**Why**: Repeatedly missed replies posted as channel messages rather than thread replies. This caused false unresponded reports 3 times.
+
+### Slack Connect Channels
+Before attempting ANY write operation, check the channel's `slack_connect` field in `message-tracker.yml` or the channel node.
+
+If `slack_connect: true`:
+- Do NOT attempt `mcp__slack__slack_send_message`
+- Instead, provide: permalink + copyable message text
+- Error if attempted: `mcp_externally_shared_channel_restricted`
+
+### Scan Order
+Always process: CRITICAL → IMPORTANT → NORMAL. Never skip tiers.
+
+### Numbered Output
+Every item in every list MUST have a sequential number for user tagging.
+
+## Messaging Modes
+
+These are direct Slack operations — no triage logic, no tracker updates.
+
+### Mode: Send
+
+Post a message to a channel.
+
+**Input**: `send <channel> <message>` — channel is name (strip `#`) or ID
+1. If channel doesn't start with `C`, resolve name to ID via `mcp__slack__slack_search_channels`
+2. Check `slack_connect` — if true, provide permalink + copyable message instead (see Critical Rules)
+3. Call `mcp__slack__slack_send_message` with channel_id and text
+4. Build permalink: `https://{workspace}.slack.com/archives/{channel_id}/p{ts_no_dot}` where `ts_no_dot` = timestamp with `.` removed (e.g., `1776114430.309819` → `p1776114430309819`). Workspace = `amiralearning` for this company.
+5. Report: channel name, message timestamp, and full permalink as a clickable link
+
+### Mode: Read
+
+Fetch recent messages from a channel or DM.
+
+**Input**: `read <channel> [count]` — count defaults to 10, max 200
+1. Resolve channel name to ID if needed
+2. Call `mcp__slack__slack_read_channel` with channel_id and limit
+3. Display each message: timestamp, author, text, thread reply count
+4. If threads exist, suggest `thread` mode to drill in
+
+### Mode: Thread
+
+Read a thread's replies or post a reply.
+
+**Input**: `thread <channel> <thread_ts> [reply_text]`
+1. Resolve channel name to ID if needed
+2. Call `mcp__slack__slack_read_thread` with channel_id and thread_ts
+3. Display parent + all replies with timestamps and authors
+4. If reply_text provided: check `slack_connect`, then call `mcp__slack__slack_send_message` with channel_id, thread_ts, text
+5. Build permalink: `https://amiralearning.slack.com/archives/{channel_id}/p{ts_no_dot}` (ts with `.` removed)
+6. Confirm reply with timestamp and permalink
+
+### Mode: Channels
+
+List or search Slack channels.
+
+**Input**: `channels [search_term]`
+1. Call `mcp__slack__slack_search_channels` with query (or list all)
+2. If search term provided, filter by case-insensitive name match
+3. Display table: channel name, ID, member count, purpose (truncated)
+
+### Mode: Users
+
+List users or view a profile.
+
+**Input**: `users [name_or_id]`
+1. If arg starts with `U`, call `mcp__slack__slack_read_user_profile` with user_id. Display name, title, status, timezone
+2. Otherwise, call `mcp__slack__slack_search_users` with query
+3. Display table: display name, user ID, title, status
+4. If a person is found, check `people.yml` for their entry and show Jira ID if available
+
+## Mode: Download
+
+Retrieve file content from a Slack message attachment. Downloads the file via Slack Web API, converts to markdown based on type, and caches the result for 72 hours.
+
+**Use case**: Email-to-channel forwarded attachments where the actual content is in the file, not the message text. Used by `/x-new-product-mapping` to extract product details from forwarded emails.
+
+### Input
+| Form | Description |
+|------|-------------|
+| `download <slack_message_url>` | Parse channel + ts, find file in message |
+| `download <file_id>` (F-prefixed) | Direct download by file ID |
+| `download --channel <id> --latest` | Get most recent file from channel |
+| `download <file_id> --invalidate` | Delete cached entry, force re-download |
+
+### Algorithm
+
+1. **Validate input** — match against `slack_url` or `file_id` pattern (see Critical Rules → Input Validation)
+
+2. **Resolve metadata**
+   - If URL: parse `channel_id` and `ts` from `/archives/{C}/p{ts_no_dot}`. Insert `.` before last 6 digits of ts. Call `mcp__slack__slack_read_channel` (or `slack_read_thread`) and find the file in the message's `files[]` array.
+   - If file_id: skip metadata fetch — download script will call `files.info` directly.
+   - If `--latest`: call `mcp__slack__slack_search_public` with `in:#channel` and content_types filter, sort by timestamp desc, take first.
+
+3. **Opportunistic cache cleanup**
+   ```bash
+   python ~/.claude/skills/x-slack/scripts/cleanup_cache.py \
+     --cache-dir ~/.claude/companies/{company}/data/slack/downloads/
+   ```
+
+4. **Cache check**
+   - `CACHE_DIR=~/.claude/companies/{company}/data/slack/downloads`
+   - If `{file_id}.md` and `{file_id}.meta.json` both exist: read meta, compare `expires_at` to now.
+   - If valid AND `--invalidate` not passed: return cached content immediately.
+   - If `--invalidate` passed: delete both files, continue to download.
+
+5. **Download file**
+   ```bash
+   TMPFILE=$(mktemp /tmp/slack-dl-XXXXXX)
+   python ~/.claude/skills/x-slack/scripts/download_slack_file.py \
+     --file-id "{file_id}" \
+     --output "$TMPFILE"
+   ```
+   If exit code != 0: STOP — return error in JSON envelope.
+
+6. **Convert to markdown**
+   ```bash
+   python ~/.claude/skills/x-slack/scripts/convert_to_markdown.py \
+     --input "$TMPFILE" \
+     --mimetype "{mimetype}" \
+     --output "$CACHE_DIR/{file_id}.md"
+   ```
+
+7. **Handle OCR** — if conversion output has `needs_ocr: true`:
+   - Spawn Haiku agent with image path (see Image OCR block below).
+   - Save agent output to `$CACHE_DIR/{file_id}.md`.
+   - If output < 50 chars AND image size > 100 KB: retry with model: sonnet.
+   - If both attempts produce < 20 chars: STOP, return error.
+
+8. **Write meta sidecar** — write `{file_id}.meta.json`:
+   ```json
+   {
+     "file_id": "F07XXXXXX",
+     "filename": "...",
+     "source_mimetype": "text/html",
+     "conversion_method": "beautifulsoup4",
+     "slack_message_ts": "1774472174.330539",
+     "channel_id": "C07RP9AE5B7",
+     "permalink": "https://...",
+     "cached_at": "<ISO8601_UTC>",
+     "expires_at": "<cached_at + 72h>",
+     "char_count": 2340,
+     "needs_ocr": false
+   }
+   ```
+
+9. **Cleanup raw file**
+   ```bash
+   rm -f "$TMPFILE"
+   ```
+
+10. **Return content** — read `{file_id}.md` and return (human or JSON).
+
+### Image OCR Spawn
+
+When `needs_ocr: true`:
+```
+Use Agent tool with:
+  subagent_type: general-purpose
+  model: haiku
+  description: Extract text from Slack image
+  prompt: |
+    Read the image at {raw_file_path}. Extract ALL text content visible.
+    Format as markdown (tables → markdown tables, email → preserve headers/body/signature).
+    Return ONLY extracted text. No commentary.
+```
+If output < 50 chars AND image size > 100 KB → retry with `model: sonnet`.
+
+### Output (human)
+```
+Downloaded: New Product Created and Ready for Mapping.html
+File ID: F07XXXXXX
+Type: text/html → markdown (beautifulsoup4)
+Cached: 72h
+Chars: 2340
+
+---
+
+[markdown content here]
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "download",
+  "ok": true,
+  "count": 1,
+  "results": [{
+    "file_id": "F07XXXXXX",
+    "filename": "New Product Created and Ready for Mapping.html",
+    "mimetype": "text/html",
+    "conversion_method": "beautifulsoup4",
+    "char_count": 2340,
+    "cached": true,
+    "cache_path": "~/.claude/companies/amira/data/slack/downloads/F07XXXXXX.md",
+    "expires_at": "2026-04-06T14:30:00Z",
+    "permalink": "https://amiralearning.slack.com/archives/C07RP9AE5B7/p1774472174330539",
+    "content": "[markdown content here]"
+  }],
+  "errors": []
+}
+```
+
+### Error cases
+| Error | Result |
+|-------|--------|
+| Invalid URL/file_id format | `ok: false`, `errors: ["Invalid input: ..."]` |
+| Token missing | `ok: false`, `errors: ["Slack bot token not found. Set SLACK_BOT_TOKEN env var."]` |
+| File not found (404) | `ok: false`, `errors: ["File F... not found or access denied"]` |
+| File too large (>50MB) | `ok: false`, `errors: ["File exceeds 50 MB cap"]` |
+| Unsupported mimetype | `ok: false`, `errors: ["Cannot convert {mimetype}. Paste content manually."]` |
+| OCR failed (image) | `ok: false`, `errors: ["Image text extraction failed. Paste content manually."]` |
+| Conversion script error | `ok: false`, `errors: ["Conversion failed: {stderr}"]` |
+
+---
+
+## Mode: Scan
+
+Full channel sweep across all priority tiers.
+
+### Phase 1: Load Config
+1. Read `message-tracker.yml` — load channels, people, triage_rules, categories
+2. Read priority hierarchy from `classification-rules.yml`
+3. Note `meta.last_search_window` for incremental scanning
+
+### Phase 2: Scan Channels (spawn parallel agents)
+
+Spawn Agent tool with `subagent_type: general-purpose` for parallel scanning:
+
+**CRITICAL tier** (scan first, all in parallel):
+- `mcp__slack__slack_read_channel` for each CRITICAL channel
+
+**IMPORTANT tier** (scan second, all in parallel):
+- `mcp__slack__slack_read_channel` for team channels + alerts
+- `mcp__slack__slack_search_public_and_private` for `<@OWNER_ID>` mentions since last scan
+
+**NORMAL tier** (scan last):
+- `mcp__slack__slack_read_channel` for remaining channels
+
+For DMs of key people: use `mcp__slack__slack_read_channel` with user_id as channel_id.
+
+### Phase 3: Classify
+For each new message found:
+1. Match against `categories` in tracker — assign best-fit category
+2. Apply `triage_rules` — determine `suggested_owner`
+3. Set priority from channel tier (CRITICAL→urgent, IMPORTANT→medium, NORMAL→low)
+4. Check FAQ for similar questions — surface matches with strength >= 0.4
+
+### Phase 4: Response Check
+For every message that mentions the owner or needs a response:
+- Run BOTH thread AND channel checks in parallel (see Critical Rules)
+- Mark status: `pending`, `resolved`, `follow_up`, or `stale`
+
+### Phase 5: Update & Present
+1. Update `message-tracker.yml` with new messages
+2. Update `people.yml`:
+   - For each new message, find or create a thread under the sender's people entry
+   - Set thread status based on response check: `awaiting_me` if no response from owner, `awaiting_them` if owner responded, `resolved` if conversation concluded
+   - Populate `jira_id` lazily: if a person's `jira_id` is null and we need it, look up via `mcp__atlassian-redacted__lookup_jira_account_id` and save
+3. Update `meta.last_updated` and `meta.last_search_window` in both files
+4. Present results using Output Format (numbered, grouped by tier)
+
+## Mode: Status
+
+Show current state from `message-tracker.yml` without scanning Slack.
+
+1. Read `message-tracker.yml`
+2. Filter messages by status: `pending` → `follow_up` → `action_needed`
+3. Present using Output Format (numbered)
+4. Show counts: pending / follow_up / resolved / stale
+
+## Mode: Archive
+
+Manage lifecycle of resolved/stale messages older than 7 days.
+
+1. Read `message-tracker.yml`
+2. Find resolved/stale messages where `date` is older than 7 days
+3. For EACH message, present and ask:
+   - "Archive or change to follow-up?"
+4. Move archived items to `message-tracker-archive.yml` (append under current month)
+5. **Verify archive write succeeded** — re-read archive file and confirm the entry is present before proceeding. If write failed, abort and report error. Never delete from the active file unless the archive write is verified.
+6. Remove archived items from `message-tracker.yml`
+7. Items changed to follow-up: update status to `follow_up`, ask for `follow_up_reason`
+
+## Mode: FAQ
+
+Search the knowledge base.
+
+| Input | Behavior |
+|-------|----------|
+| `faq` | Show all topics with entry counts |
+| `faq <term>` | Search entries by keyword across question, answer, context, edge_cases |
+| `faq <topic>` | Show all entries for a topic |
+
+For each match, display:
+- FAQ ID, question, answer (or "UNANSWERED")
+- Edge cases (bulleted)
+- Related entries with strength scores
+- Linked Jira tickets
+- Source permalink
+
+## Mode: Reply
+
+Respond to a tracked message.
+
+1. Validate `<msg-id>` format and lookup in `message-tracker.yml` — reject if not found
+2. Validate `<text>` length (max 4000 chars)
+3. Resolve channel and thread_ts
+4. **Preview before sending**: Show the channel name, thread context, and full message text. Ask for confirmation before sending. In `--json --quiet` mode, return the preview as a dry-run result with `"sent": false` — the calling agent must make a second call with `reply <msg-id> --confirm <text>` to actually send
+5. Check `slack_connect` on the channel:
+   - If `true`: provide permalink + copyable message (see Critical Rules)
+   - If `false`: call `mcp__slack__slack_send_message` with channel_id, thread_ts, text
+6. Update message status to `resolved` with `resolved_by` noting the reply
+7. Update `people.yml`: find the thread containing this msg-id, set status to `awaiting_them` (or `resolved` if the reply closes the topic)
+8. Check if the reply answers a question — if so, run faq add dedup check before appending to `faq.yml`
+
+## Mode: Search
+
+Find tracked messages by keyword, Jira ticket key, or person name.
+
+**Input**: `search <term>` where term is free-text (e.g., `search PROJ-9939`, `search login bug`, `search Alice`)
+
+### Algorithm
+1. Read `message-tracker.yml`
+2. Search across these fields in each message: `summary`, `from`, `category`, `jira_tickets`, `channel`
+3. Also search `faq.yml` entries: `question`, `answer`, `context`, `edge_cases`, `topic`, `jira_tickets`
+4. Return combined results, messages first then FAQ hits
+
+### Output (human)
+```
+### Messages (N matches)
+1. **msg-007** — From: Alice — "login fails after password reset" — #triage
+   Status: pending | Category: bug_triage | Jira: PROJ-9939
+
+### FAQ (N matches)
+2. **faq-003** — Topic: auth — "Why does login fail after reset?"
+   Strength: 0.8 to faq-001 | Jira: PROJ-9939
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "search",
+  "ok": true,
+  "count": 2,
+  "results": [
+    { "type": "message", "id": "msg-007", "from": "Alice", "summary": "...", "channel": "triage", "status": "pending", "category": "bug_triage", "jira_tickets": ["PROJ-9939"] },
+    { "type": "faq", "id": "faq-003", "topic": "auth", "question": "...", "strength": 0.8, "related_to": "faq-001", "jira_tickets": ["PROJ-9939"] }
+  ],
+  "errors": []
+}
+```
+
+## Mode: Context
+
+Reverse lookup: given a Jira ticket key, find ALL related Slack messages and FAQ entries.
+
+**Input**: `context <JIRA-KEY>` (e.g., `context PROJ-9939`)
+
+### Algorithm
+1. Read `message-tracker.yml` — scan `messages[].jira_tickets` for the key
+2. Read `faq.yml` — scan `jira_index` for the key, then load matching FAQ entries
+3. Also search `faq.yml` entries where `jira_tickets` contains the key
+4. Follow `related_to` links from matched FAQ entries (one hop, strength >= 0.4)
+5. Return combined context
+
+### Output (human)
+```
+### PROJ-9939 — Slack Context
+
+**Messages (2)**
+1. **msg-007** — From: Alice — #triage — Status: pending
+   "login fails after password reset"
+2. **msg-012** — From: Bob — #critical — Status: resolved
+   "users locked out after deploy"
+
+**FAQ (1 direct, 1 related)**
+3. **faq-003** — "Why does login fail after reset?" — ANSWERED
+4. **faq-001** — (related, strength 0.8) — "Auth pipeline overview"
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "context",
+  "ok": true,
+  "jira_key": "PROJ-9939",
+  "count": 4,
+  "results": {
+    "messages": [ { "id": "msg-007", "from": "Alice", "channel": "triage", "status": "pending", "summary": "..." } ],
+    "faq_direct": [ { "id": "faq-003", "topic": "auth", "question": "...", "answered": true } ],
+    "faq_related": [ { "id": "faq-001", "strength": 0.8, "topic": "auth", "question": "..." } ]
+  },
+  "errors": []
+}
+```
+
+## Mode: Update
+
+Programmatic field update on a tracked message. No interactive prompts — designed for agent use.
+
+**Input**: `update <msg-id> <field> <value>`
+
+### Supported Fields
+
+| Field | Allowed Values | Notes |
+|-------|---------------|-------|
+| `status` | `pending`, `resolved`, `follow_up`, `action_needed`, `stale` | Most common update |
+| `priority` | `urgent`, `critical`, `medium`, `low` | Override channel-derived priority |
+| `category` | Any key from `categories` in tracker | Reclassify |
+| `suggested_owner` | Any key from `people` in tracker | Reroute |
+| `follow_up_reason` | Free text | Required when status → follow_up |
+
+### Algorithm
+1. Read `message-tracker.yml`
+2. Find message by `id` — error if not found
+3. Validate field name and value against allowed list
+4. Update the field in-place
+5. Set `meta.last_updated` to now
+6. Write back to `message-tracker.yml`
+
+### Output (human)
+```
+Updated msg-007: status → resolved
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "update",
+  "ok": true,
+  "count": 1,
+  "results": [{ "id": "msg-007", "field": "status", "old_value": "pending", "new_value": "resolved" }],
+  "errors": []
+}
+```
+
+### Error cases
+- `ok: false` if msg-id not found, field not in allowed list, or value not valid for field
+
+## Mode: Link
+
+Connect a tracked message to a Jira ticket. Bidirectional: updates both message and `jira_tickets` node.
+
+**Input**: `link <msg-id> <JIRA-KEY>` (e.g., `link msg-007 PROJ-9939`)
+
+### Algorithm
+1. Read `message-tracker.yml`
+2. Find message by `id` — error if not found
+3. Append `JIRA-KEY` to message's `jira_tickets` array (dedup)
+4. Add/update entry in top-level `jira_tickets` node: `{ key: JIRA-KEY, messages: [msg-id], faq_entries: [...] }`
+5. Check `faq.yml` — if any entries reference this Jira key, update `jira_index`
+6. Write both files
+
+### Output (human)
+```
+Linked msg-007 ↔ PROJ-9939
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "link",
+  "ok": true,
+  "count": 1,
+  "results": [{ "msg_id": "msg-007", "jira_key": "PROJ-9939", "already_linked": false }],
+  "errors": []
+}
+```
+
+## Mode: Who
+
+Show all pending/active items for or from a specific person, including conversation threads and directional status.
+
+**Input**: `who <person>` — matches against `people.yml` keys, `name`, and `alias` fields (case-insensitive, partial match)
+
+### Algorithm
+1. Read `people.yml` — resolve person identity
+   - If multiple candidates match, do NOT auto-select. Return all candidates and ask the caller to disambiguate using the exact key
+   - In `--json --quiet` mode: return `ok: false` with a `candidates` array listing each match's key and name
+2. Read `message-tracker.yml` — find messages where:
+   - `from` matches the person's slack_id, OR
+   - `suggested_owner` matches the person's slack_id, OR
+   - `mentioned` includes the person's slack_id
+3. Filter messages to non-archived statuses: `pending`, `follow_up`, `action_needed`
+4. Load person's `threads` from `people.yml` — filter to non-resolved statuses
+5. Merge: messages + threads, deduped by msg-id
+6. Sort by: `awaiting_me` first, then priority (urgent → low), then date descending
+
+### Output (human)
+```
+### Alice Smith (alice_smith) — 2 threads, 2 messages
+
+Slack: UXXXXXXXXXX | Jira: 712020:xxx-xxx | Pref: slack_dm
+Topics: engineering
+
+**Threads awaiting me:**
+1. login_reset_bug — "Login fails after password reset"
+   Status: awaiting_me | Since: 2026-01-15 | Messages: msg-007
+
+**Messages:**
+2. **msg-007** — Login fails after password reset — #triage
+   Priority: medium | Status: pending | Category: bug_triage
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "who",
+  "ok": true,
+  "person": { "key": "alice_smith", "name": "Alice Smith", "slack_id": "UXXXXXXXXXX", "jira_id": "712020:xxx-xxx", "comm_pref": "slack_dm", "topics": ["engineering"] },
+  "count": 2,
+  "results": {
+    "threads": [
+      { "topic": "login_reset_bug", "status": "awaiting_me", "msg_ids": ["msg-007"], "faq_ids": [], "last_contact": "2026-01-15", "next_followup": null, "note": "..." }
+    ],
+    "messages": [
+      { "id": "msg-007", "summary": "...", "priority": "medium", "status": "pending", "category": "bug_triage", "role": "from" }
+    ]
+  },
+  "errors": []
+}
+```
+
+## Mode: FAQ Add
+
+Programmatically create a new FAQ entry. Used by agents after answering a question.
+
+**Input**: `faq add <topic> <question> <answer>`
+
+Arguments are positional, separated by the first space after each segment. For multi-word values, the parser splits on the first 3 unquoted segments. If ambiguous, wrap in quotes: `faq add "auth" "Why does login fail after reset?" "The session token expires after password change"`
+
+### Algorithm
+1. Read `faq.yml`
+2. **Dedup check** (before creating anything):
+   - Normalize incoming question to lowercase, remove stop words
+   - Compare against ALL existing entries on: `question`, `topic`, `context`
+   - If same `topic` AND word overlap > 60% → near-duplicate
+   - If any entry scores strength >= 0.9 → reject with error showing the existing entry's id, question, and answer so the caller can merge instead
+   - If strength 0.7–0.89 → warn but allow (show the similar entry for awareness)
+3. Generate next faq-id (e.g., `faq-008`) — re-read `faq.yml` immediately before to avoid ID collisions from concurrent adds
+4. Create entry:
+   - `topic`, `question`, `answer`, `date: now`, `times_asked: 1`
+   - `confidence: 0.7` if added interactively, `confidence: 0.5` if added by an agent
+   - `source_type: human` or `agent` — tracks provenance
+5. Compute `related_to` links: tokenize question + topic, match against existing entries
+   - Score by keyword overlap + topic match
+   - Include links with strength >= 0.4
+6. Append entry to `faq.yml`
+7. If answer references Jira tickets (pattern: `\b[A-Z]{2,12}-\d{1,7}\b`), update `jira_index` — only for project prefixes configured in `classification-rules.yml`
+
+### Output (human)
+```
+Created faq-008: [auth] "Why does login fail after password reset?"
+Related: faq-002 (strength: 0.6), faq-005 (strength: 0.4)
+```
+
+### Output (JSON)
+```json
+{
+  "mode": "faq_add",
+  "ok": true,
+  "count": 1,
+  "results": [{ "id": "faq-008", "topic": "auth", "question": "...", "related_to": [{ "id": "faq-002", "strength": 0.6 }] }],
+  "errors": []
+}
+```
+
+### Near-duplicate rejection
+If strength >= 0.9 or (same topic AND word overlap > 60%):
+```json
+{
+  "mode": "faq_add",
+  "ok": false,
+  "count": 0,
+  "results": [],
+  "errors": ["Near-duplicate of faq-002 (strength: 0.95) — 'Why does login fail after reset?' — answer: 'Session token expires after password change...'. Update the existing entry instead of creating a new one."]
+}
+```
+
+## Mode: Help
+
+List all available modes with descriptions, arguments, and agent-friendliness. Designed for both humans and agent discovery.
+
+**Input**: `help` or `help <mode>`
+
+### `help` (no args) — Overview
+
+Output the full argument table from [Argument Parsing](#argument-parsing) plus:
+- Data directory path
+- Global flags available (`--json --quiet`)
+- Quick examples for each mode
+
+### `help <mode>` — Detail
+
+Output for a specific mode:
+- Description (1-2 sentences)
+- Full input syntax with examples
+- Supported fields/values (for `update`, `link`, etc.)
+- JSON output schema
+- Agent usage example
+
+### Output (JSON)
+```json
+{
+  "mode": "help",
+  "ok": true,
+  "count": 12,
+  "results": [
+    { "mode": "scan", "usage": "scan", "description": "Full channel sweep across all priority tiers", "agent_friendly": false, "args": [] },
+    { "mode": "search", "usage": "search <term>", "description": "Find messages by keyword/ticket/person", "agent_friendly": true, "args": ["term"] }
+  ],
+  "errors": []
+}
+```
+
+## Output Format
+
+All output follows this structure:
+
+```
+### TIER_NAME
+
+N. **From** — Summary — [link](permalink)
+   Category: X | Suggested: Y | Status: Z
+   [FAQ match: faq-NNN (strength: 0.X) — "previous answer summary"]
+```
+
+Requirements:
+- Sequential numbers across all tiers (1, 2, 3... not restarting per tier)
+- Every item has: from, summary, permalink
+- Category and suggested_owner from triage classification
+- FAQ matches shown inline when strength >= 0.4
+- Jira tickets shown when linked
+
+## JSON Output Format
+
+When `--json --quiet` is active, every mode returns the standard envelope. Mode-specific `results` schemas:
+
+| Mode | results type | Key fields |
+|------|-------------|------------|
+| `scan` | `array<message>` | id, from, channel, summary, status, priority, category, faq_matches |
+| `status` | `array<message>` | id, from, summary, status, priority, category |
+| `archive` | `array<{id, action}>` | id, action (archived/follow_up) |
+| `faq` | `array<faq_entry>` | id, topic, question, answer, edge_cases, related_to, jira_tickets |
+| `faq add` | `array<{id, topic, related_to}>` | id, topic, question, related_to |
+| `reply` | `array<{msg_id, channel, sent}>` | msg_id, channel_id, sent (bool), permalink |
+| `search` | `array<message\|faq_entry>` | type (message/faq), id, plus type-specific fields |
+| `context` | `{messages, faq_direct, faq_related}` | Grouped by source type |
+| `update` | `array<{id, field, old_value, new_value}>` | Single updated field |
+| `link` | `array<{msg_id, jira_key, already_linked}>` | Link result |
+| `who` | `{threads, messages}` | person identity + threads (directional status, follow-up) + messages |
+| `download` | `array<{file_id, filename, mimetype, char_count, content, ...}>` | file_id, filename, mimetype, conversion_method, char_count, cache_path, expires_at, permalink, content |
+| `help` | `array<mode_info>` | mode, usage, description, agent_friendly, args |
+
+Agents consuming JSON should check `ok` first, then iterate `results`. Error messages in `errors` array are human-readable strings.
+
+## Triage Classification
+
+When classifying a new message:
+
+1. **Category match**: Compare message content against `categories` descriptions in tracker
+2. **Rule match**: Walk `triage_rules` list — first matching rule sets `suggested_owner`
+3. **Priority**: Inherit from channel tier unless content overrides:
+   - P0 in any channel → `urgent`
+   - Direct @mention in CRITICAL → `critical`
+   - IMPORTANT channel → `medium`
+   - NORMAL channel → `low`
+4. **Confidence**: Set based on rule match quality (high/medium/low)
+
+After user acts on a message (archive, follow-up, delegate), update triage_rules if the action reveals a new pattern. Add with `confidence: low` initially; promote after 3 confirmations.
+
+## FAQ Matching
+
+When a new question is found:
+
+1. Tokenize the question into keywords
+2. Match against `faq.yml` entries: question, context, edge_cases, topic
+3. Score: keyword overlap + topic match + related_to chain
+4. Surface matches with strength >= 0.4
+5. If strength >= 0.8, suggest: "You answered this before (faq-NNN)"
+
+When the user answers a question:
+
+1. Create new FAQ entry with: topic, question, answer, context, asked_by, date, source
+2. Add edge_cases from investigation findings
+3. Compute `related_to` links against existing entries:
+   - 1.0 = same root cause / duplicate
+   - 0.8 = same system, closely related symptom
+   - 0.6 = same domain, different mechanism
+   - 0.4 = tangentially related (shared component/table)
+   - 0.2 = loosely related (same team/area)
+4. Add jira_tickets if any referenced
+5. Update jira_index in faq.yml
+6. Increment `times_asked` if duplicate question
+
+## Agent Spawning
+
+The skill spawns agents for parallel work:
+
+### Channel Scanner Agent
+```
+Spawn: Agent tool, subagent_type: general-purpose
+Task: Read channels [list] using mcp__slack__slack_read_channel.
+      For each message mentioning owner, also run mcp__slack__slack_read_thread
+      AND mcp__slack__slack_read_channel to check for responses.
+      Return: list of {message_ts, channel_id, from, text, has_response, response_text}
+```
+
+### FAQ Matcher Agent
+```
+Spawn: Agent tool, subagent_type: general-purpose
+Task: Given question text, search faq.yml for matching entries.
+      Score by keyword overlap + topic + related_to chain.
+      Return: list of {faq_id, strength, answer_summary, edge_cases}
+```
+
+## Cross-Skill Integration
+
+Other skills can use the agent-friendly modes directly or spawn the slack-triage agent for more complex work.
+
+### Preferred: Direct Mode Calls
+
+Agents should call modes directly with `--json --quiet` for structured results:
+
+#### /x-bug-fix investigating PROJ-9939
+```
+1. /x-slack context PROJ-9939 --json --quiet
+   → Get all Slack messages + FAQ entries about this ticket
+2. /x-slack search "login fails" --json --quiet
+   → Find related discussions by symptom keywords
+3. /x-slack who Alice --json --quiet
+   → Check what Alice has pending (she reported the bug)
+4. After fixing: /x-slack update msg-007 status resolved --json --quiet
+5. If new knowledge: /x-slack faq add "auth" "Why does login fail?" "Session token expires..." --json --quiet
+6. Link ticket: /x-slack link msg-007 PROJ-9939 --json --quiet
+```
+
+### From /x-new-product-mapping
+
+When a Slack message contains a file attachment (email-to-channel forwarding):
+
+```
+1. /x-slack download <slack_message_url> --json --quiet
+   → Returns markdown text content of the email attachment
+
+2. Pipe content to product mapping parser:
+   /x-new-product-mapping <markdown_content>
+```
+
+The download mode handles caching, conversion, and OCR automatically. Requires `SLACK_BOT_TOKEN` env var with `files:read` scope.
+
+### To /x-new-product-mapping (auto-routing during triage)
+
+**When triaging messages, auto-detect the "New Product Created" pattern and suggest
+routing to `/x-new-product-mapping`.**
+
+**Detection pattern** (matches the rule in `classification-rules.yml`):
+- Channel: `#the-syndicate-team` (C07RP9AE5B7)
+- From: `USLACKBOT` (Slackbot — because the email is forwarded into the channel)
+- Message contains keywords: `"New Product Created"` or `"Ready for Mapping"`
+- Has a file attachment (the actual email body as `text/html`)
+
+**What to do when you find one:**
+
+1. **Check the processed cache first** — the mapping skill keeps its own audit log:
+   ```bash
+   printf '%s\n' "<slack_message_url>" | \
+     python ~/.claude/skills/x-new-product-mapping/scripts/check_processed.py --json
+   ```
+   If the URL already has a `submitted` or `nothing-to-do` entry, **skip** — it's already
+   been mapped. No action needed.
+
+2. **If unprocessed**, classify the message as `category: product_config`,
+   `suggested_owner: U02GX89Q3LP`, `suggested_skill: /x-new-product-mapping`, and
+   surface it in the triage output with a routing hint like:
+   ```
+   msg-NNN — #the-syndicate-team — New Product Created — unprocessed
+     Category: product_config | Suggested skill: /x-new-product-mapping
+     Next step: download attachment → parse → resolve components → map via map_product.py
+   ```
+
+3. **Never auto-execute the mapping itself** — it requires manual SSO login to
+   SForceSync and user confirmation at the Submit gate. The triage agent's job is to
+   SURFACE the work, not do it.
+
+4. **After the user runs the mapping**, `map_product.py --notify-slack` handles the
+   thread reply automatically. No follow-up action from x-slack is needed.
+
+**Why this rule has `auto_handler: true`**: the handler skill is fully automated
+end-to-end (parse → resolve → browser automation → audit log → Slack reply), so the
+only thing a human needs to do is run one command. Much cheaper than manual mapping.
+
+See: `~/.claude/skills/x-new-product-mapping/SKILL.md` for the full workflow.
+
+### To /x-review-pr (auto-spawn PR reviews during triage)
+
+**When triaging messages, auto-detect GitHub PR links and spawn `/x-review-pr` asynchronously.**
+
+**Detection pattern** (matches the rule in `classification-rules.yml`):
+- Channel: `#the-syndicate-team` (C07RP9AE5B7)
+- Message text contains a `github.com/*/pull/\d+` URL
+- Sender: any human user (NOT a bot — `bot_id` is absent)
+
+**Self-PR check** — before spawning:
+1. Extract the PR URL from the message text
+2. Run: `gh pr view <url> --json author --jq '.author.login'`
+3. Compare with: `gh api user --jq '.login'`
+4. If same → track the message with `action_needed: false`, `action_reason: self-pr`. Do NOT spawn a review.
+
+**For non-self PRs:**
+
+1. **Track the message** in `message-tracker.yml` with `category: code_review`,
+   `suggested_skill: /x-review-pr`, `status: pending`.
+
+2. **Spawn `/x-review-pr` as a background agent:**
+   ```
+   Agent tool, subagent_type: general-purpose, run_in_background: true
+   Prompt: "Run /x-review-pr <PR_URL> in PEER-REVIEW mode.
+   After the review completes, post results to Slack:
+   1. Add :approved_stamp: reaction to the original message
+      (channel: C07RP9AE5B7, ts: <message_ts>).
+      If :approved_stamp: fails, fall back to :white_check_mark:.
+   2. Post a threaded reply (channel: C07RP9AE5B7, thread_ts: <message_ts>)
+      using the x-new-product-mapping Slack token at
+      ~/.claude/companies/amira/data/tokens/slack/x-slack.json.
+
+   Reply template:
+   - No changes requested: 'Reviewed — no requested changes.'
+   - Changes requested: 'Reviewed — found some things for you to take a look at.'
+     Then add 1-2 HUMAN sentences of context:
+     - If nitpicks only: 'These are mostly small nitpicks — nothing blocking.'
+     - If good code: 'Nice approach on the [specific thing].'
+     - If security issue: 'There is a [brief description] that should be addressed before merge.'
+     NEVER use emojis in the reply text. NEVER list blockers/major/minor counts.
+     Just natural sentences, 1-3 max.
+
+   The review uses /x-review-pr's built-in agent model (4 always-on + up to 4
+   conditional by file type). Engineering-skills enrichments (pr-review-expert,
+   tdd-guide, senior-qa) are loaded automatically per Phase 2.1 of /x-review-pr."
+   ```
+
+3. **The agent runs asynchronously** — triage returns immediately. The background
+   agent handles the review, GitHub comments, Slack reaction, and thread reply.
+
+4. **Update message-tracker.yml** when the agent completes:
+   `status: resolved`, `resolved_by: /x-review-pr`, `resolved_at: <timestamp>`.
+
+**Triage watermark:**
+- Use `meta.last_search_window` as the starting point for each scan.
+- For unresolved PR messages: re-fetch and check for edits, new thread comments.
+- Auto-resolve informational-only messages (CI pass/fail bots, deployment notices).
+
+**Testing the watermark (manual integration test):**
+
+There is no automated way to test the watermark — the first real `/x-slack scan` after
+classification-rules changes IS the test. Use this checklist:
+
+1. Before scanning: read `meta.last_search_window` from `message-tracker.yml` and note the value.
+2. Run `/x-slack scan` against `#the-syndicate-team`.
+3. Verify `meta.last_search_window` advanced to a newer timestamp.
+4. Verify any new PR messages (containing `github.com/*/pull/\d+`) were classified as
+   `code_review` with `suggested_skill: /x-review-pr`.
+5. Verify PR messages where you are the author were tracked with `action_needed: false`
+   and `action_reason: self-pr`.
+6. Verify the `/x-review-pr` agent was spawned (or queued) for non-self PR messages.
+
+See: `~/.claude/skills/x-review-pr/SKILL.md` for the full review workflow.
+
+### Advanced: Agent Spawn
+
+For complex work requiring live Slack scanning (not just tracker queries), spawn the full agent:
+
+Prompt template: see [agent-prompt.md](agent-prompt.md)
+
+### Spawn Pattern
+```markdown
+Use Agent tool with subagent_type: general-purpose
+Prompt: [contents of agent-prompt.md with variables filled in]
+```
+
+### Agent Discovery
+
+Other agents can call `/x-slack help --json --quiet` to discover all available modes and their arguments at runtime. This enables dynamic integration without hardcoding mode knowledge.
