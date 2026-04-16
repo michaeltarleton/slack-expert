@@ -54,7 +54,7 @@ When scanning, look for messages that match KNOWN handler-skill patterns. When m
 surface them in the output with a `suggested_skill` field so the user knows a one-command
 fix is available.
 
-### Pattern: New Product Created (→ `/x-new-product-mapping`)
+### Pattern: New Product Created (→ `/new-product-mapping`)
 
 **Match criteria** (all must hold):
 - Channel: `#the-syndicate-team` (C07RP9AE5B7)
@@ -69,16 +69,16 @@ fix is available.
   channel: the-syndicate-team
   category: product_config
   suggested_owner: U02GX89Q3LP
-  suggested_skill: /x-new-product-mapping
+  suggested_skill: /new-product-mapping
   auto_handler: true
-  action: "Run /x-new-product-mapping with the message URL to parse, resolve components, and map via SForceSync browser automation"
+  action: "Run /new-product-mapping with the message URL to parse, resolve components, and map via SForceSync browser automation"
   permalink: <message permalink>
 ```
 
 **Pre-flight check** — before flagging as unprocessed, run the skill's cache:
 ```bash
 printf '%s\n' "<slack_permalink>" | \
-  python ~/.claude/skills/x-new-product-mapping/scripts/check_processed.py --json
+  python ~/.claude/skills/new-product-mapping/scripts/check_processed.py --json
 ```
 If the URL appears in `processed` with `last_status` of `submitted` or `nothing-to-do`,
 **do not surface it** — it's already done.
@@ -86,7 +86,7 @@ If the URL appears in `processed` with `last_status` of `submitted` or `nothing-
 **Never auto-execute** the handler. Requires manual SSO login to SForceSync and a
 human-in-the-loop Submit gate. The triage agent's job is to SURFACE the work.
 
-### Pattern: GitHub PR link (-> `/x-review-pr`, async spawn)
+### Pattern: GitHub PR link (-> `/review-pr`, async spawn)
 
 **Match criteria** (all must hold):
 - Channel: `#the-syndicate-team` (C07RP9AE5B7)
@@ -103,7 +103,7 @@ If same author → track with `action_needed: false`, `action_reason: self-pr`. 
 **For non-self PRs, auto-spawn an async review agent:**
 ```
 Agent tool, subagent_type: general-purpose, run_in_background: true
-Prompt: "Run /x-review-pr <PR_URL> in PEER-REVIEW mode.
+Prompt: "Run /review-pr <PR_URL> in PEER-REVIEW mode.
 Enrich with engineering-skills methodologies:
 - Read engineering/pr-review-expert/SKILL.md and append to review prompts
 - Read engineering-team/tdd-guide/SKILL.md and append to test quality prompts
@@ -124,7 +124,7 @@ After review, post to Slack:
   channel: the-syndicate-team
   category: code_review
   suggested_owner: U02GX89Q3LP
-  suggested_skill: /x-review-pr
+  suggested_skill: /review-pr
   auto_handler: true
   async_spawn: true
   pr_url: https://github.com/amira-rnd/amira-sso/pull/104
@@ -183,7 +183,7 @@ Only spawn the full agent (below) when you need **live Slack scanning** — i.e.
 
 ## Full Agent Usage Examples
 
-### From /x-bug-fix
+### From /bug-fix
 ```
 TASK_DESCRIPTION: Check if PROJ-9939 is being discussed in any triage
 channels. Search for the ticket number and related keywords. Also check
@@ -193,7 +193,7 @@ ADDITIONAL_CONTEXT: Focus on CRITICAL channels only. Return any Slack threads
 discussing this ticket and who is already involved.
 ```
 
-### From /x-feature
+### From /feature
 ```
 TASK_DESCRIPTION: Check if there are any ongoing discussions about
 [FEATURE_TOPIC] in team channels or DMs.

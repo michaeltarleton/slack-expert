@@ -233,7 +233,7 @@ List users or view a profile.
 
 Retrieve file content from a Slack message attachment. Downloads the file via Slack Web API, converts to markdown based on type, and caches the result for 72 hours.
 
-**Use case**: Email-to-channel forwarded attachments where the actual content is in the file, not the message text. Used by `/x-new-product-mapping` to extract product details from forwarded emails.
+**Use case**: Email-to-channel forwarded attachments where the actual content is in the file, not the message text. Used by `/new-product-mapping` to extract product details from forwarded emails.
 
 ### Input
 | Form | Description |
@@ -883,7 +883,7 @@ Other skills can use the agent-friendly modes directly or spawn the slack-triage
 
 Agents should call modes directly with `--json --quiet` for structured results:
 
-#### /x-bug-fix investigating PROJ-9939
+#### /bug-fix investigating PROJ-9939
 ```
 1. /x-slack context PROJ-9939 --json --quiet
    → Get all Slack messages + FAQ entries about this ticket
@@ -896,7 +896,7 @@ Agents should call modes directly with `--json --quiet` for structured results:
 6. Link ticket: /x-slack link msg-007 PROJ-9939 --json --quiet
 ```
 
-### From /x-new-product-mapping
+### From /new-product-mapping
 
 When a Slack message contains a file attachment (email-to-channel forwarding):
 
@@ -905,15 +905,15 @@ When a Slack message contains a file attachment (email-to-channel forwarding):
    → Returns markdown text content of the email attachment
 
 2. Pipe content to product mapping parser:
-   /x-new-product-mapping <markdown_content>
+   /new-product-mapping <markdown_content>
 ```
 
 The download mode handles caching, conversion, and OCR automatically. Requires `SLACK_BOT_TOKEN` env var with `files:read` scope.
 
-### To /x-new-product-mapping (auto-routing during triage)
+### To /new-product-mapping (auto-routing during triage)
 
 **When triaging messages, auto-detect the "New Product Created" pattern and suggest
-routing to `/x-new-product-mapping`.**
+routing to `/new-product-mapping`.**
 
 **Detection pattern** (matches the rule in `classification-rules.yml`):
 - Channel: `#the-syndicate-team` (C07RP9AE5B7)
@@ -926,17 +926,17 @@ routing to `/x-new-product-mapping`.**
 1. **Check the processed cache first** — the mapping skill keeps its own audit log:
    ```bash
    printf '%s\n' "<slack_message_url>" | \
-     python ~/.claude/skills/x-new-product-mapping/scripts/check_processed.py --json
+     python ~/.claude/skills/new-product-mapping/scripts/check_processed.py --json
    ```
    If the URL already has a `submitted` or `nothing-to-do` entry, **skip** — it's already
    been mapped. No action needed.
 
 2. **If unprocessed**, classify the message as `category: product_config`,
-   `suggested_owner: U02GX89Q3LP`, `suggested_skill: /x-new-product-mapping`, and
+   `suggested_owner: U02GX89Q3LP`, `suggested_skill: /new-product-mapping`, and
    surface it in the triage output with a routing hint like:
    ```
    msg-NNN — #the-syndicate-team — New Product Created — unprocessed
-     Category: product_config | Suggested skill: /x-new-product-mapping
+     Category: product_config | Suggested skill: /new-product-mapping
      Next step: download attachment → parse → resolve components → map via map_product.py
    ```
 
@@ -951,11 +951,11 @@ routing to `/x-new-product-mapping`.**
 end-to-end (parse → resolve → browser automation → audit log → Slack reply), so the
 only thing a human needs to do is run one command. Much cheaper than manual mapping.
 
-See: `~/.claude/skills/x-new-product-mapping/SKILL.md` for the full workflow.
+See: `~/.claude/skills/new-product-mapping/SKILL.md` for the full workflow.
 
-### To /x-review-pr (auto-spawn PR reviews during triage)
+### To /review-pr (auto-spawn PR reviews during triage)
 
-**When triaging messages, auto-detect GitHub PR links and spawn `/x-review-pr` asynchronously.**
+**When triaging messages, auto-detect GitHub PR links and spawn `/review-pr` asynchronously.**
 
 **Detection pattern** (matches the rule in `classification-rules.yml`):
 - Channel: `#the-syndicate-team` (C07RP9AE5B7)
@@ -971,18 +971,18 @@ See: `~/.claude/skills/x-new-product-mapping/SKILL.md` for the full workflow.
 **For non-self PRs:**
 
 1. **Track the message** in `message-tracker.yml` with `category: code_review`,
-   `suggested_skill: /x-review-pr`, `status: pending`.
+   `suggested_skill: /review-pr`, `status: pending`.
 
-2. **Spawn `/x-review-pr` as a background agent:**
+2. **Spawn `/review-pr` as a background agent:**
    ```
    Agent tool, subagent_type: general-purpose, run_in_background: true
-   Prompt: "Run /x-review-pr <PR_URL> in PEER-REVIEW mode.
+   Prompt: "Run /review-pr <PR_URL> in PEER-REVIEW mode.
    After the review completes, post results to Slack:
    1. Add :approved_stamp: reaction to the original message
       (channel: C07RP9AE5B7, ts: <message_ts>).
       If :approved_stamp: fails, fall back to :white_check_mark:.
    2. Post a threaded reply (channel: C07RP9AE5B7, thread_ts: <message_ts>)
-      using the x-new-product-mapping Slack token at
+      using the new-product-mapping Slack token at
       ~/.claude/companies/amira/data/tokens/slack/x-slack.json.
 
    Reply template:
@@ -995,16 +995,16 @@ See: `~/.claude/skills/x-new-product-mapping/SKILL.md` for the full workflow.
      NEVER use emojis in the reply text. NEVER list blockers/major/minor counts.
      Just natural sentences, 1-3 max.
 
-   The review uses /x-review-pr's built-in agent model (4 always-on + up to 4
+   The review uses /review-pr's built-in agent model (4 always-on + up to 4
    conditional by file type). Engineering-skills enrichments (pr-review-expert,
-   tdd-guide, senior-qa) are loaded automatically per Phase 2.1 of /x-review-pr."
+   tdd-guide, senior-qa) are loaded automatically per Phase 2.1 of /review-pr."
    ```
 
 3. **The agent runs asynchronously** — triage returns immediately. The background
    agent handles the review, GitHub comments, Slack reaction, and thread reply.
 
 4. **Update message-tracker.yml** when the agent completes:
-   `status: resolved`, `resolved_by: /x-review-pr`, `resolved_at: <timestamp>`.
+   `status: resolved`, `resolved_by: /review-pr`, `resolved_at: <timestamp>`.
 
 **Triage watermark:**
 - Use `meta.last_search_window` as the starting point for each scan.
@@ -1020,12 +1020,12 @@ classification-rules changes IS the test. Use this checklist:
 2. Run `/x-slack scan` against `#the-syndicate-team`.
 3. Verify `meta.last_search_window` advanced to a newer timestamp.
 4. Verify any new PR messages (containing `github.com/*/pull/\d+`) were classified as
-   `code_review` with `suggested_skill: /x-review-pr`.
+   `code_review` with `suggested_skill: /review-pr`.
 5. Verify PR messages where you are the author were tracked with `action_needed: false`
    and `action_reason: self-pr`.
-6. Verify the `/x-review-pr` agent was spawned (or queued) for non-self PR messages.
+6. Verify the `/review-pr` agent was spawned (or queued) for non-self PR messages.
 
-See: `~/.claude/skills/x-review-pr/SKILL.md` for the full review workflow.
+See: `~/.claude/skills/review-pr/SKILL.md` for the full review workflow.
 
 ### Advanced: Agent Spawn
 
