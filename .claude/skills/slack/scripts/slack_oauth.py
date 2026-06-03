@@ -228,7 +228,7 @@ def main() -> None:
         default="",
         help="Skill name requesting the token. Saves to tokens/slack/<skill>.json "
              "instead of the legacy slack/token.json. Each skill gets its own token "
-             "with minimal scopes. Example: --skill x-new-product-mapping",
+             "with minimal scopes. Example: --skill new-product-mapping",
     )
     parser.add_argument(
         "--scopes",
