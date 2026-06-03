@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-One-time Slack OAuth setup for the x-slack skill.
+One-time Slack OAuth setup for the slack skill.
 
 Uses the official Slack MCP app (public client — no client secret needed).
-Token is saved to ~/.claude/companies/{company}/data/slack/token.json and
-is auto-discovered by scripts/download_slack_file.py.
+Token is saved under ~/.claude/companies/{company}/data/ (exact path depends
+on --skill; see "After running" below) and is auto-discovered by
+scripts/download_slack_file.py.
 
 Usage (default — uses official Slack MCP client ID):
     python scripts/slack_oauth.py
@@ -13,9 +14,11 @@ Usage (default — uses official Slack MCP client ID):
 Usage (custom Slack app — requires your own client ID + secret):
     python scripts/slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET
 
-After running:
-    - Token saved to ~/.claude/companies/{company}/data/slack/token.json
-    - Sourceable env file at ~/.claude/companies/{company}/data/slack/slack-env.sh
+After running (token + a sourceable `.env.sh` are written together):
+    - With --skill <name>:
+      ~/.claude/companies/{company}/data/tokens/slack/<skill>.json  (+ <skill>.env.sh)
+    - Without --skill (legacy):
+      ~/.claude/companies/{company}/data/slack/token.json  (+ token.env.sh)
 """
 import argparse
 import base64
@@ -50,7 +53,7 @@ TOKEN_URL = "https://slack.com/api/oauth.v2.access"
 
 # The official Slack MCP app (public client) supports PKCE auth with user scopes
 # including files:read, chat:write, channels:history, reactions:write, and more.
-# Default scopes cover x-slack's own needs. Other skills pass --skill + --scopes
+# Default scopes cover slack's own needs. Other skills pass --skill + --scopes
 # to get a separate token with only the scopes they require.
 USER_SCOPES = "files:read,channels:history,chat:write,reactions:write"
 
@@ -185,7 +188,7 @@ def _save_token(token_data: dict, company: str, skill: str = "") -> tuple[Path, 
     primary = user_token or bot_token
     env_file = token_file.with_suffix(".env.sh")
     with open(env_file, "w", encoding="utf-8") as f:
-        f.write(f"# Slack token for {'skill ' + skill if skill else 'x-slack'}\n")
+        f.write(f"# Slack token for {'skill ' + skill if skill else 'slack'}\n")
         f.write(f"# Generated: {datetime.now(timezone.utc).isoformat()}\n")
         if user_token:
             f.write(f'export SLACK_USER_TOKEN="{user_token}"\n')
@@ -207,7 +210,7 @@ def _port_in_use(port: int) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Authenticate with Slack via OAuth and store token for x-slack"
+        description="Authenticate with Slack via OAuth and store token for slack"
     )
     parser.add_argument(
         "--client-id",
@@ -264,7 +267,7 @@ def main() -> None:
 
     auth_url = f"{AUTHORIZE_URL}?{urllib.parse.urlencode(auth_params)}"
 
-    skill_label = args.skill or "x-slack"
+    skill_label = args.skill or "slack"
     print("=" * 60)
     print(f"Slack OAuth Setup — {skill_label}")
     if using_official:
@@ -346,7 +349,7 @@ def main() -> None:
         masked = bot_token[:12] + "..." + bot_token[-4:]
         print(f"  Bot token:   {masked}")
     print()
-    print("The x-slack skill will automatically use the stored token.")
+    print("The slack skill will automatically use the stored token.")
     print()
     print("Optional — add to your shell profile (~/.bashrc or ~/.zprofile):")
     print(f'  source "{env_file}"')

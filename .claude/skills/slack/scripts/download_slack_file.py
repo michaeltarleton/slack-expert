@@ -29,10 +29,11 @@ CHUNK_SIZE = 65536
 def _token() -> str:
     """Resolve token in priority order:
     1. SLACK_BOT_TOKEN env var
-    2. SLACK_USER_TOKEN env var (set by slack_oauth.py via slack-env.sh)
+    2. SLACK_USER_TOKEN env var (set by slack_oauth.py via the .env.sh written next to the token, e.g. <skill>.env.sh)
     3. SLACK_TOKEN env var (generic fallback)
-    4. ~/.claude/companies/*/data/tokens/slack/x-slack.json (new per-skill token)
-    5. ~/.claude/companies/*/data/slack/token.json (legacy fallback)
+    4. ~/.claude/companies/*/data/tokens/slack/slack.json (new per-skill token)
+    5. ~/.claude/companies/*/data/tokens/slack/x-slack.json (legacy per-skill name)
+    6. ~/.claude/companies/*/data/slack/token.json (legacy fallback)
     """
     for var in ("SLACK_BOT_TOKEN", "SLACK_USER_TOKEN", "SLACK_TOKEN"):
         tok = os.environ.get(var)
@@ -42,8 +43,20 @@ def _token() -> str:
     import glob as _glob
 
     # Per-skill token (new convention)
-    new_pattern = str(Path.home() / ".claude" / "companies" / "*" / "data" / "tokens" / "slack" / "x-slack.json")
+    new_pattern = str(Path.home() / ".claude" / "companies" / "*" / "data" / "tokens" / "slack" / "slack.json")
     for token_file in _glob.glob(new_pattern):
+        try:
+            with open(token_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            tok = data.get("user_token") or data.get("bot_token")
+            if tok:
+                return tok
+        except Exception:
+            continue
+
+    # Legacy per-skill name (pre-rename); keep old installs working without re-auth
+    legacy_skill_pattern = str(Path.home() / ".claude" / "companies" / "*" / "data" / "tokens" / "slack" / "x-slack.json")
+    for token_file in _glob.glob(legacy_skill_pattern):
         try:
             with open(token_file, "r", encoding="utf-8") as f:
                 data = json.load(f)

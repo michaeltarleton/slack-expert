@@ -158,25 +158,25 @@ Before spawning a full agent, consider using direct skill modes with `--json --q
 
 ```
 # Quick Jira context lookup
-/x-slack context PROJ-9939 --json --quiet
+/slack context PROJ-9939 --json --quiet
 
 # Search by keyword
-/x-slack search "login bug" --json --quiet
+/slack search "login bug" --json --quiet
 
 # Check a person's pending items
-/x-slack who Alice --json --quiet
+/slack who Alice --json --quiet
 
 # Update message status after acting
-/x-slack update msg-007 status resolved --json --quiet
+/slack update msg-007 status resolved --json --quiet
 
 # Link message to ticket
-/x-slack link msg-007 PROJ-9939 --json --quiet
+/slack link msg-007 PROJ-9939 --json --quiet
 
 # Add FAQ entry from investigation findings
-/x-slack faq add "auth" "Why does login fail?" "Session token expires after password change" --json --quiet
+/slack faq add "auth" "Why does login fail?" "Session token expires after password change" --json --quiet
 
 # Discover all available modes
-/x-slack help --json --quiet
+/slack help --json --quiet
 ```
 
 Only spawn the full agent (below) when you need **live Slack scanning** — i.e., fresh data from channels not yet in the tracker.
@@ -202,7 +202,7 @@ ADDITIONAL_CONTEXT: Focus on IMPORTANT channels. Check faq.yml for
 related domain knowledge entries.
 ```
 
-### For full scan (from /x-slack skill)
+### For full scan (from /slack skill)
 ```
 TASK_DESCRIPTION: Full scan of all channels by priority tier. Find new
 messages since {{LAST_SEARCH_WINDOW}}. Check for @mentions of owner and

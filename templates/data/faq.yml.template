@@ -1,6 +1,6 @@
 ---
-# FAQ KNOWLEDGE BASE — Shared between x-slack and x-jira skills.
-# Entries are created automatically by /x-slack faq add or /x-jira.
+# FAQ KNOWLEDGE BASE — Shared between slack and jira skills.
+# Entries are created automatically by /slack faq add (/jira reads but does not create entries).
 # You can also add entries manually following the schema below.
 
 meta:

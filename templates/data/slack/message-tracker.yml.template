@@ -1,12 +1,12 @@
 ---
 # MESSAGE TRACKER — Active Slack messages, channels, and triage rules.
-# Populated automatically by /x-slack scan.
+# Populated automatically by /slack scan.
 # Configure the channels and triage_rules sections manually.
 
 meta:
   last_updated: null
   last_search_window: null        # ISO timestamp of last scan (for incremental scanning)
-  owner_slack_id: UXXXXXXXXXX     # Your Slack user ID — run /x-slack users <your name>
+  owner_slack_id: UXXXXXXXXXX     # Your Slack user ID — run /slack users <your name>
 
 # Channel configuration — add all channels you want to scan
 channels:

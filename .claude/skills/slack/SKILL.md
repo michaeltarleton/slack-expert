@@ -1,5 +1,5 @@
 ---
-name: x-slack
+name: slack
 description: Unified Slack interface — send/read messages, manage channels/users, download file attachments, triage by priority tier, track responses, manage FAQ knowledge base, and suggest routing. Use for any Slack operation, triage, or when other skills need Slack context.
 user_invocable: true
 args: "[send|read|thread|channels|users|download|scan|status|archive|faq|faq add|reply|search|context|update|link|who|help] [args...] [--json --quiet]"
@@ -254,7 +254,7 @@ Retrieve file content from a Slack message attachment. Downloads the file via Sl
 
 3. **Opportunistic cache cleanup**
    ```bash
-   python ~/.claude/skills/x-slack/scripts/cleanup_cache.py \
+   python ~/.claude/skills/slack/scripts/cleanup_cache.py \
      --cache-dir ~/.claude/companies/{company}/data/slack/downloads/
    ```
 
@@ -267,7 +267,7 @@ Retrieve file content from a Slack message attachment. Downloads the file via Sl
 5. **Download file**
    ```bash
    TMPFILE=$(mktemp /tmp/slack-dl-XXXXXX)
-   python ~/.claude/skills/x-slack/scripts/download_slack_file.py \
+   python ~/.claude/skills/slack/scripts/download_slack_file.py \
      --file-id "{file_id}" \
      --output "$TMPFILE"
    ```
@@ -275,7 +275,7 @@ Retrieve file content from a Slack message attachment. Downloads the file via Sl
 
 6. **Convert to markdown**
    ```bash
-   python ~/.claude/skills/x-slack/scripts/convert_to_markdown.py \
+   python ~/.claude/skills/slack/scripts/convert_to_markdown.py \
      --input "$TMPFILE" \
      --mimetype "{mimetype}" \
      --output "$CACHE_DIR/{file_id}.md"
@@ -885,15 +885,15 @@ Agents should call modes directly with `--json --quiet` for structured results:
 
 #### /bug-fix investigating PROJ-9939
 ```
-1. /x-slack context PROJ-9939 --json --quiet
+1. /slack context PROJ-9939 --json --quiet
    → Get all Slack messages + FAQ entries about this ticket
-2. /x-slack search "login fails" --json --quiet
+2. /slack search "login fails" --json --quiet
    → Find related discussions by symptom keywords
-3. /x-slack who Alice --json --quiet
+3. /slack who Alice --json --quiet
    → Check what Alice has pending (she reported the bug)
-4. After fixing: /x-slack update msg-007 status resolved --json --quiet
-5. If new knowledge: /x-slack faq add "auth" "Why does login fail?" "Session token expires..." --json --quiet
-6. Link ticket: /x-slack link msg-007 PROJ-9939 --json --quiet
+4. After fixing: /slack update msg-007 status resolved --json --quiet
+5. If new knowledge: /slack faq add "auth" "Why does login fail?" "Session token expires..." --json --quiet
+6. Link ticket: /slack link msg-007 PROJ-9939 --json --quiet
 ```
 
 ### From /new-product-mapping
@@ -901,7 +901,7 @@ Agents should call modes directly with `--json --quiet` for structured results:
 When a Slack message contains a file attachment (email-to-channel forwarding):
 
 ```
-1. /x-slack download <slack_message_url> --json --quiet
+1. /slack download <slack_message_url> --json --quiet
    → Returns markdown text content of the email attachment
 
 2. Pipe content to product mapping parser:
@@ -945,7 +945,7 @@ routing to `/new-product-mapping`.**
    SURFACE the work, not do it.
 
 4. **After the user runs the mapping**, `map_product.py --notify-slack` handles the
-   thread reply automatically. No follow-up action from x-slack is needed.
+   thread reply automatically. No follow-up action from slack is needed.
 
 **Why this rule has `auto_handler: true`**: the handler skill is fully automated
 end-to-end (parse → resolve → browser automation → audit log → Slack reply), so the
@@ -982,8 +982,9 @@ See: `~/.claude/skills/new-product-mapping/SKILL.md` for the full workflow.
       (channel: C07RP9AE5B7, ts: <message_ts>).
       If :approved_stamp: fails, fall back to :white_check_mark:.
    2. Post a threaded reply (channel: C07RP9AE5B7, thread_ts: <message_ts>)
-      using the new-product-mapping Slack token at
-      ~/.claude/companies/amira/data/tokens/slack/x-slack.json.
+      using the new-product-mapping `chat:write` token (created by
+      notify_slack_auth.py; see skills/new-product-mapping/scripts/notify_slack.py
+      for its exact path).
 
    Reply template:
    - No changes requested: 'Reviewed — no requested changes.'
@@ -1013,11 +1014,11 @@ See: `~/.claude/skills/new-product-mapping/SKILL.md` for the full workflow.
 
 **Testing the watermark (manual integration test):**
 
-There is no automated way to test the watermark — the first real `/x-slack scan` after
+There is no automated way to test the watermark — the first real `/slack scan` after
 classification-rules changes IS the test. Use this checklist:
 
 1. Before scanning: read `meta.last_search_window` from `message-tracker.yml` and note the value.
-2. Run `/x-slack scan` against `#the-syndicate-team`.
+2. Run `/slack scan` against `#the-syndicate-team`.
 3. Verify `meta.last_search_window` advanced to a newer timestamp.
 4. Verify any new PR messages (containing `github.com/*/pull/\d+`) were classified as
    `code_review` with `suggested_skill: /review-pr`.
@@ -1041,4 +1042,4 @@ Prompt: [contents of agent-prompt.md with variables filled in]
 
 ### Agent Discovery
 
-Other agents can call `/x-slack help --json --quiet` to discover all available modes and their arguments at runtime. This enables dynamic integration without hardcoding mode knowledge.
+Other agents can call `/slack help --json --quiet` to discover all available modes and their arguments at runtime. This enables dynamic integration without hardcoding mode knowledge.
