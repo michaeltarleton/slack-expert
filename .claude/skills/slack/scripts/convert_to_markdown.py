@@ -17,7 +17,7 @@ Output (JSON to stdout):
     }
 
 Exit codes:
-    0  Success (or needs_ocr=true — partial success)
+    0  Success (or needs_ocr=true -- partial success)
     1  Missing dependency
     2  Unsupported file type
     3  Conversion error
@@ -35,7 +35,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 MAGIC_BYTES: list[tuple[bytes, str]] = [
     (b"%PDF", "application/pdf"),
-    (b"PK\x03\x04", "application/zip"),   # docx/xlsx — disambiguate by ext
+    (b"PK\x03\x04", "application/zip"),   # docx/xlsx -- disambiguate by ext
     (b"\x89PNG", "image/png"),
     (b"\xff\xd8\xff", "image/jpeg"),
     (b"GIF8", "image/gif"),
@@ -135,7 +135,7 @@ def html_to_markdown(path: str) -> str:
     h.ignore_images = True
     h.body_width = 0             # no line-wrapping
     h.unicode_snob = True
-    h.ignore_tables = True       # email HTML uses tables for layout — extract as text
+    h.ignore_tables = True       # email HTML uses tables for layout -- extract as text
     h.single_line_break = False
 
     md = h.handle(cleaned_html)

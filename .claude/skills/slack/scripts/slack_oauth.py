@@ -2,16 +2,16 @@
 """
 One-time Slack OAuth setup for the slack skill.
 
-Uses the official Slack MCP app (public client — no client secret needed).
+Uses the official Slack MCP app (public client -- no client secret needed).
 Token is saved under ~/.claude/companies/{company}/data/ (exact path depends
 on --skill; see "After running" below) and is auto-discovered by
 scripts/download_slack_file.py.
 
-Usage (default — uses official Slack MCP client ID):
+Usage (default -- uses official Slack MCP client ID):
     python scripts/slack_oauth.py
     python scripts/slack_oauth.py --company acme
 
-Usage (custom Slack app — requires your own client ID + secret):
+Usage (custom Slack app -- requires your own client ID + secret):
     python scripts/slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET
 
 After running (token + a sourceable `.env.sh` are written together):
@@ -39,7 +39,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-# Official Slack MCP app — public client, PKCE only, no client secret.
+# Official Slack MCP app -- public client, PKCE only, no client secret.
 # Client ID from ~/.mcp.json (Slack's hosted MCP server at mcp.slack.com/mcp).
 OFFICIAL_CLIENT_ID = "1601185624273.8899143856786"
 
@@ -248,7 +248,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Generate PKCE pair (always — official app requires it; custom apps ignore code_verifier)
+    # Generate PKCE pair (always -- official app requires it; custom apps ignore code_verifier)
     code_verifier, code_challenge = _pkce_pair()
 
     # Start local callback server
@@ -269,9 +269,9 @@ def main() -> None:
 
     skill_label = args.skill or "slack"
     print("=" * 60)
-    print(f"Slack OAuth Setup — {skill_label}")
+    print(f"Slack OAuth Setup -- {skill_label}")
     if using_official:
-        print("Using official Slack MCP app (PKCE — no client secret needed)")
+        print("Using official Slack MCP app (PKCE -- no client secret needed)")
     else:
         print(f"Using custom app: {args.client_id}")
     print(f"Scopes: {args.scopes}")
@@ -351,7 +351,7 @@ def main() -> None:
     print()
     print("The slack skill will automatically use the stored token.")
     print()
-    print("Optional — add to your shell profile (~/.bashrc or ~/.zprofile):")
+    print("Optional -- add to your shell profile (~/.bashrc or ~/.zprofile):")
     print(f'  source "{env_file}"')
     print()
     print("Done.")

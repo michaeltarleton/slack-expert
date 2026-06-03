@@ -166,7 +166,7 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--file-id", help="Slack file ID (F-prefixed)")
     group.add_argument("--url", help="Direct private download URL")
-    parser.add_argument("--output", required=True, help="Output file path (no extension — added automatically)")
+    parser.add_argument("--output", required=True, help="Output file path (no extension -- added automatically)")
     parser.add_argument("--token", help="Slack bot token (overrides env vars)")
     args = parser.parse_args()
 
