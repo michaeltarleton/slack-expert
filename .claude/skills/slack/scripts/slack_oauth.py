@@ -15,9 +15,9 @@ Usage (custom Slack app -- requires your own client ID + secret):
     python scripts/slack_oauth.py --client-id YOUR_ID --client-secret YOUR_SECRET
 
 After running (token + a sourceable `.env.sh` are written together):
-    - With --skill <name>:
+    - Default (--skill defaults to "slack") or any --skill <name>:
       ~/.claude/companies/{company}/data/tokens/slack/<skill>.json  (+ <skill>.env.sh)
-    - Without --skill (legacy):
+    - Legacy path requires an explicit empty skill (--skill ""):
       ~/.claude/companies/{company}/data/slack/token.json  (+ token.env.sh)
 """
 import argparse
@@ -33,8 +33,11 @@ import threading
 import urllib.parse
 import urllib.request
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+import slack_secret  # DPAPI-sealed creds store (load_client_creds)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -208,14 +211,37 @@ def _port_in_use(port: int) -> bool:
         return s.connect_ex(("localhost", port)) == 0
 
 
+def _resolve_client(client_id_arg, client_secret_arg, store: dict):
+    """Resolve (client_id, client_secret, error) for the OAuth flow.
+
+    - An explicit --client-id (non-None) wins; otherwise the stored custom-app id,
+      else the official Slack MCP app.
+    - error is set (caller aborts) when a creds file EXISTS but is unreadable/
+      undecryptable and no secret was resolved -- UNLESS the user explicitly chose
+      the official app, whose PKCE flow needs no secret so a broken store is moot.
+      Aborting otherwise prevents two failure modes: a custom app entering a PKCE
+      flow Slack rejects only after browser consent, and a corrupt store silently
+      defaulting to (and authenticating with) the wrong official app.
+    """
+    explicit = client_id_arg is not None
+    client_id = client_id_arg if explicit else (store.get("client_id") or OFFICIAL_CLIENT_ID)
+    secret = client_secret_arg or store.get("client_secret", "")
+    using_official = client_id == OFFICIAL_CLIENT_ID
+    error = None
+    if not secret and store.get("client_secret_error") and not (using_official and explicit):
+        error = store["client_secret_error"]
+    return client_id, secret, error
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Authenticate with Slack via OAuth and store token for slack"
     )
     parser.add_argument(
         "--client-id",
-        default=OFFICIAL_CLIENT_ID,
-        help=f"Slack app Client ID (default: official Slack MCP app {OFFICIAL_CLIENT_ID})",
+        default=None,
+        help=f"Slack app Client ID. An explicit value wins; otherwise the stored "
+             f"custom-app id, otherwise the official Slack MCP app {OFFICIAL_CLIENT_ID}.",
     )
     parser.add_argument(
         "--client-secret",
@@ -225,10 +251,12 @@ def main() -> None:
     parser.add_argument("--company", default="amira", help="Company name (default: amira)")
     parser.add_argument(
         "--skill",
-        default="",
-        help="Skill name requesting the token. Saves to tokens/slack/<skill>.json "
-             "instead of the legacy slack/token.json. Each skill gets its own token "
-             "with minimal scopes. Example: --skill new-product-mapping",
+        default="slack",
+        help="Skill name requesting the token. Saves to tokens/slack/<skill>.json. "
+             "Default 'slack' is the shared rotating token; matches slack_secret.py "
+             "and slack_refresh.py so bare invocation finds the sealed creds. Pass "
+             "another name for a separate per-skill token, or \"\" for the legacy "
+             "slack/token.json path.",
     )
     parser.add_argument(
         "--scopes",
@@ -236,6 +264,15 @@ def main() -> None:
         help=f"User token scopes (default: {USER_SCOPES!r})",
     )
     args = parser.parse_args()
+
+    # Prefer the DPAPI-sealed creds store (written by slack_secret.py) so the
+    # client secret never has to be typed on the command line.
+    store = slack_secret.load_client_creds(args.company, args.skill)
+    args.client_id, resolved_secret, creds_err = _resolve_client(
+        args.client_id, args.client_secret, store)
+    if creds_err:
+        print(f"ERROR: {creds_err}", file=sys.stderr)
+        sys.exit(1)
 
     using_official = args.client_id == OFFICIAL_CLIENT_ID
 
@@ -300,10 +337,10 @@ def main() -> None:
     print("Authorization code received. Exchanging for token...")
 
     # Exchange code for token
-    if using_official or not args.client_secret:
+    if using_official or not resolved_secret:
         token_resp = _exchange_code_pkce(_auth_result["code"], code_verifier, args.client_id)
     else:
-        token_resp = _exchange_code_secret(_auth_result["code"], args.client_id, args.client_secret)
+        token_resp = _exchange_code_secret(_auth_result["code"], args.client_id, resolved_secret)
 
     if not token_resp.get("ok"):
         error = token_resp.get("error", "unknown")
@@ -318,17 +355,30 @@ def main() -> None:
         sys.exit(1)
 
     # Extract tokens
-    user_token = (token_resp.get("authed_user") or {}).get("access_token", "")
+    authed_user = token_resp.get("authed_user") or {}
+    user_token = authed_user.get("access_token", "")
     bot_token = token_resp.get("access_token", "")
+
+    # Token rotation (only present when the app has token_rotation_enabled):
+    # each token comes with a single-use refresh_token and a 12h expires_in.
+    user_refresh = authed_user.get("refresh_token", "")
+    bot_refresh = token_resp.get("refresh_token", "")
+    expires_in = authed_user.get("expires_in") or token_resp.get("expires_in")
+    expires_at = ""
+    if expires_in:
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
 
     token_data = {
         "ok": True,
         "user_token": user_token,
         "bot_token": bot_token,
-        "user_id": (token_resp.get("authed_user") or {}).get("id", ""),
+        "user_refresh_token": user_refresh,
+        "bot_refresh_token": bot_refresh,
+        "expires_at": expires_at,
+        "user_id": authed_user.get("id", ""),
         "team_id": (token_resp.get("team") or {}).get("id", ""),
         "team_name": (token_resp.get("team") or {}).get("name", ""),
-        "scopes": (token_resp.get("authed_user") or {}).get("scope", args.scopes),
+        "scopes": authed_user.get("scope", args.scopes),
         "obtained_at": datetime.now(timezone.utc).isoformat(),
         "client_id": args.client_id,
     }
