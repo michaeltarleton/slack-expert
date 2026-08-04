@@ -156,6 +156,50 @@ If `slack_connect: true`:
 - Instead, provide: permalink + copyable message text
 - Error if attempted: `mcp_externally_shared_channel_restricted`
 
+### Never Put `<angle-bracket>` Placeholders In Or Near A URL
+
+Slack mrkdwn treats `<...>` as link syntax and parses the URL BEFORE inline code, so backticks do
+**not** protect a placeholder.
+
+- BAD: `` `https://secure.app.amiralearning.com/?domain=<new_name>` ``
+  renders as `<https://...?domain=&lt;new_name|https://...?domain=<new_name>>` — the placeholder is destroyed.
+- GOOD: ALLCAPS placeholder (`?domain=NEW_DOMAIN_NAME`), or a concrete example value.
+- Note Slack auto-links a bare URL either way; that is fine as long as the label reads correctly.
+
+Applies to `<oid>`, `<name>`, `<campus>` — any angle-bracket placeholder. ALLCAPS is the safe default.
+
+*Incident 2026-07-29:* a batch report to `#standalone-school-migration-2026` shipped with a mangled
+login-URL pattern — the single line Support needed in order to act. Fixed via `update`.
+
+### Always Read Back A Write — Especially A Delegated One
+
+After ANY post/update/delete, verify with a read (`conversations.history`, or `mcp__slack__slack_read_channel`
+when the MCP is connected) BEFORE reporting success. Assert: the message exists, appears exactly
+ONCE, `edited` is true for an update, and the text survived (no `&lt;`, mentions resolved to
+`<@UID>`, em-dash/`→`/`·`/`•` intact).
+
+**A subagent's "sent successfully" is not evidence.** *Incident 2026-07-29:* a delegated channel post
+returned a confident narration ("the skill has been invoked… once it completes I'll report back")
+after a single tool call, having sent nothing; a channel read caught it. The same day a delegated DM
+genuinely did land. The report correlated with reality in neither direction — so verify, always.
+
+Corollary: on an apparent failure, **read before retrying** — blind retries double-post.
+
+Terminal caveat: a Windows cp1252 console renders em-dash/`•` as `?`/`�` in the read-back. That is a
+display artifact, not corruption. Assert on `'&lt;' in text` and explicit substring checks instead of
+eyeballing the dump.
+
+### Verify Ownership Claims Against The Source Of Truth
+
+When a message routes action to a named person, resolve the owner from the authoritative report — do
+not accept a conversational "X handles that state". Then confirm each name resolves to a live Slack
+user before `<@UID>`-mentioning; name-only mentions are silent no-ops.
+
+*Incident 2026-07-29:* the operator said Jasmin + Alan cover Texas. The account report showed the 13
+affected campuses actually split **Jason Hiatt 7 / Rachael Thomas 3+1 / Gabriel Bearden 1**, one had
+no report row at all, and Jason Hiatt has **no account in the workspace** — so 7 of 13 campuses would
+have been routed to someone who could not receive the mention. State gaps explicitly in the message.
+
 ### Scan Order
 Always process: CRITICAL → IMPORTANT → NORMAL. Never skip tiers.
 
