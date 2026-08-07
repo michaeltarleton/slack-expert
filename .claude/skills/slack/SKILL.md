@@ -152,9 +152,15 @@ NEVER mark a message as unresponded based on thread check alone. DMs and group D
 Before attempting ANY write operation, check the channel's `slack_connect` field in `message-tracker.yml` or the channel node.
 
 If `slack_connect: true`:
-- Do NOT attempt `mcp__slack__slack_send_message`
+- Do NOT attempt to post via `scripts/slack_post.py` (or any tool)
 - Instead, provide: permalink + copyable message text
 - Error if attempted: `mcp_externally_shared_channel_restricted`
+
+### Never Send/Edit/Delete via the Claude App MCP
+
+**NEVER use `mcp__slack__slack_send_message`, `mcp__slack__slack_update_message`, `mcp__slack__slack_delete_message`, or any `claude_ai_Slack__*` tool for sends, edits, or deletes.** Those post through the Claude Slack app (`A08SF47R6P4`), which stamps every message with a "sent using Claude" watermark and has mangled non-ASCII punctuation (em-dash -> mojibake). **ALWAYS use `scripts/slack_post.py`** (direct Slack Web API `chat.postMessage`/`chat.update`/`chat.delete` with the stored user token) for every write operation. This is permanent — do not revert to the MCP tools for writes even if they seem more convenient.
+
+Read-only `mcp__slack__*` calls (`slack_read_channel`, `slack_read_thread`, `slack_search_*`, `slack_read_user_profile`, etc.) are unaffected — reads don't watermark and stay on the MCP.
 
 ### Never Put `<angle-bracket>` Placeholders In Or Near A URL
 
@@ -184,6 +190,11 @@ after a single tool call, having sent nothing; a channel read caught it. The sam
 genuinely did land. The report correlated with reality in neither direction — so verify, always.
 
 Corollary: on an apparent failure, **read before retrying** — blind retries double-post.
+
+**For a thread reply, read back with `conversations.replies` (or `mcp__slack__slack_read_thread`), NOT
+`conversations.history`.** `conversations.history` returns only top-level messages, so verifying a
+threaded post against it inspects an unrelated neighbouring message and false-fails a send that
+actually landed — which then invites the double-post the corollary above warns about.
 
 Terminal caveat: a Windows cp1252 console renders em-dash/`•` as `?`/`�` in the read-back. That is a
 display artifact, not corruption. Assert on `'&lt;' in text` and explicit substring checks instead of
@@ -217,8 +228,14 @@ Post a message to a channel.
 **Input**: `send <channel> <message>` — channel is name (strip `#`) or ID
 1. If channel doesn't start with `C`, resolve name to ID via `mcp__slack__slack_search_channels`
 2. Check `slack_connect` — if true, provide permalink + copyable message instead (see Critical Rules)
-3. Call `mcp__slack__slack_send_message` with channel_id and text
-4. Build permalink: `https://{workspace}.slack.com/archives/{channel_id}/p{ts_no_dot}` where `ts_no_dot` = timestamp with `.` removed (e.g., `1776114430.309819` → `p1776114430309819`). Workspace = `amiralearning` for this company.
+3. Run, passing `--company <company>` (the company resolved per [Data Files](#data-files); omitting it silently defaults to `amira`) and piping the message body through stdin so shell metacharacters (backticks, `$VAR`, quotes) in the text can't corrupt the command or get shell-interpreted — **never** `mcp__slack__slack_send_message` (see Critical Rules → Never Send/Edit/Delete via the Claude App MCP):
+   ```bash
+   python scripts/slack_post.py post --company <company> --channel <channel_id> --text-stdin <<'EOF'
+   <text>
+   EOF
+   ```
+   The script prints `ts=` and `permalink=` on success.
+4. Permalink is printed by the script directly (`https://amiralearning.slack.com/archives/{channel_id}/p{ts_no_dot}`); no need to build it manually.
 5. Report: channel name, message timestamp, and full permalink as a clickable link
 
 ### Mode: Read
@@ -239,8 +256,13 @@ Read a thread's replies or post a reply.
 1. Resolve channel name to ID if needed
 2. Call `mcp__slack__slack_read_thread` with channel_id and thread_ts
 3. Display parent + all replies with timestamps and authors
-4. If reply_text provided: check `slack_connect`, then call `mcp__slack__slack_send_message` with channel_id, thread_ts, text
-5. Build permalink: `https://amiralearning.slack.com/archives/{channel_id}/p{ts_no_dot}` (ts with `.` removed)
+4. If reply_text provided: check `slack_connect`, then run, passing `--company <company>` (see [Data Files](#data-files)) and the reply text via stdin — **never** `mcp__slack__slack_send_message`:
+   ```bash
+   python scripts/slack_post.py post --company <company> --channel <channel_id> --thread-ts <thread_ts> --text-stdin <<'EOF'
+   <text>
+   EOF
+   ```
+5. Permalink is printed by the script (`https://amiralearning.slack.com/archives/{channel_id}/p{ts_no_dot}?thread_ts={thread_ts}&cid={channel_id}`)
 6. Confirm reply with timestamp and permalink
 
 ### Mode: Channels

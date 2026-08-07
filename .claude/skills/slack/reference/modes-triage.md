@@ -97,7 +97,12 @@ Respond to a tracked message.
 4. **Preview before sending**: Show the channel name, thread context, and full message text. Ask for confirmation before sending. In `--json --quiet` mode, return the preview as a dry-run result with `"sent": false` — the calling agent must make a second call with `reply <msg-id> --confirm <text>` to actually send
 5. Check `slack_connect` on the channel:
    - If `true`: provide permalink + copyable message (see Critical Rules)
-   - If `false`: call `mcp__slack__slack_send_message` with channel_id, thread_ts, text
+   - If `false`: run, passing `--company <company>` (see SKILL.md → Data Files) and the reply text via stdin — **never** `mcp__slack__slack_send_message`:
+     ```bash
+     python scripts/slack_post.py post --company <company> --channel <channel_id> --thread-ts <thread_ts> --text-stdin <<'EOF'
+     <text>
+     EOF
+     ```
 6. Update message status to `resolved` with `resolved_by` noting the reply
 7. Update `people.yml`: find the thread containing this msg-id, set status to `awaiting_them` (or `resolved` if the reply closes the topic)
 8. Check if the reply answers a question — if so, run faq add dedup check before appending to `faq.yml`
