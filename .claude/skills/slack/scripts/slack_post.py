@@ -14,6 +14,11 @@ Usage:
     python scripts/slack_post.py post   --channel C0123456 --text "hi" --thread-ts 1776114430.309819
     python scripts/slack_post.py update --channel C0123456 --update-ts 1776114430.309819 --text "edited"
     python scripts/slack_post.py delete --channel C0123456 --delete-ts 1776114430.309819
+    python scripts/slack_post.py upload --channel U0123456 --file ./SKILL.md --title "SKILL.md" --comment "see attached"
+
+    `upload` takes a channel id or a user id (U..., or W... on Enterprise Grid); a user id
+    opens the DM first. The
+    file goes files.getUploadURLExternal -> POST upload_url -> files.completeUploadExternal.
 
     Message text containing shell metacharacters (backticks, $VAR, quotes)
     must go through stdin instead of --text, via a single-quoted heredoc:
@@ -32,6 +37,7 @@ import argparse
 import json
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -93,6 +99,54 @@ def _call(method: str, token: str, payload: dict) -> dict:
             return {"ok": False, "error": f"http_{e.code}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _call_form(method: str, token: str, fields: dict) -> dict:
+    """_call for methods that reject a JSON body (files.getUploadURLExternal, files.info):
+    they answer `invalid_arguments` to JSON and only accept form encoding."""
+    body = urllib.parse.urlencode(fields).encode("utf-8")
+    req = urllib.request.Request(
+        f"{API_BASE}/{method}",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        try:
+            return json.load(e)
+        except Exception:
+            return {"ok": False, "error": f"http_{e.code}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _resolve_channel(token: str, channel: str) -> str:
+    """A user id is not a postable channel for files.completeUploadExternal; open the DM.
+    Slack user ids start with U, or W on Enterprise Grid / Slack Connect."""
+    if channel[:1] not in ("U", "W"):
+        return channel
+    resp = _call("conversations.open", token, {"users": channel})
+    if not resp.get("ok"):
+        print(f"ERROR: conversations.open failed for {channel}: {resp.get('error')}", file=sys.stderr)
+        return ""
+    return resp["channel"]["id"]
+
+
+def _share_ts(token: str, file_id: str, channel: str) -> str:
+    """files.completeUploadExternal does not return the share message ts; files.info does.
+    A file already shared elsewhere lists every share, so pick the target channel's entry."""
+    info = _call_form("files.info", token, {"file": file_id})
+    for scope in info.get("file", {}).get("shares", {}).values():
+        for entry in scope.get(channel, []):
+            if entry.get("ts"):
+                return entry["ts"]
+    return ""
 
 
 def _workspace_host(args) -> str:
@@ -202,6 +256,63 @@ def cmd_delete(args) -> int:
     return 0
 
 
+def _resolve_comment(args) -> str:
+    if args.comment_stdin:
+        return sys.stdin.buffer.read().decode("utf-8").rstrip("\r\n")
+    return args.comment or ""
+
+
+def cmd_upload(args) -> int:
+    # Read the file before touching Slack: a missing/unreadable file must fail with no
+    # token load (which can sys.exit) and no side effects such as opening a DM.
+    path = Path(args.file).expanduser()
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        print(f"ERROR: cannot read {path}: {e}", file=sys.stderr)
+        return 1
+    host = _workspace_host(args)
+    token = _load_user_token(args)
+    comment = _resolve_comment(args)
+    channel = _resolve_channel(token, args.channel)
+    if not channel:
+        return 1
+    resp = _call_form("files.getUploadURLExternal", token, {"filename": path.name, "length": len(data)})
+    upload_url, file_id = resp.get("upload_url", ""), resp.get("file_id", "")
+    if not resp.get("ok") or not upload_url or not file_id:
+        print(f"ERROR: files.getUploadURLExternal failed: {resp.get('error') or 'missing upload_url/file_id'}",
+              file=sys.stderr)
+        return 1
+    req = urllib.request.Request(upload_url, data=data, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as up:
+            up.read()
+    except Exception as e:
+        print(f"ERROR: upload to upload_url failed: {e}", file=sys.stderr)
+        return 1
+    complete = {
+        "files": [{"id": file_id, "title": args.title or path.name}],
+        "channel_id": channel,
+    }
+    if comment:
+        complete["initial_comment"] = comment
+    if args.thread_ts:
+        complete["thread_ts"] = args.thread_ts
+    done = _call("files.completeUploadExternal", token, complete)
+    if not done.get("ok"):
+        print(f"ERROR: files.completeUploadExternal failed: {done.get('error')}", file=sys.stderr)
+        return 1
+    print(f"ok file_id={file_id} channel={channel} bytes={len(data)}")
+    ts = _share_ts(token, file_id, channel)
+    if ts:
+        print(f"ts={ts}")
+        print(f"permalink={_permalink(host, channel, ts, args.thread_ts)}")
+    else:
+        print("WARNING: files.info returned no share ts; the upload succeeded -- verify with a channel read",
+              file=sys.stderr)
+    return 0
+
+
 def _common_args() -> argparse.ArgumentParser:
     """Shared flags, attached to each SUBparser rather than the top level.
 
@@ -223,7 +334,7 @@ def _common_args() -> argparse.ArgumentParser:
 def build_parser() -> argparse.ArgumentParser:
     """The one parser definition. Tests must use this rather than reconstructing an
     equivalent one -- a mirrored copy drifts and passes while the real CLI is broken."""
-    parser = argparse.ArgumentParser(description="Post/update/delete Slack messages via direct Web API (user token, no watermark)")
+    parser = argparse.ArgumentParser(description="Post/update/delete Slack messages and upload files via direct Web API (user token, no watermark)")
     sub = parser.add_subparsers(dest="command", required=True)
     common = _common_args()
 
@@ -243,6 +354,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_delete.add_argument("--channel", required=True)
     p_delete.add_argument("--delete-ts", required=True)
     p_delete.set_defaults(func=cmd_delete)
+
+    p_upload = sub.add_parser("upload", help="Upload a file to a channel, or to a user's DM",
+                              parents=[common])
+    p_upload.add_argument("--channel", required=True,
+                          help="Channel id (C/D/G...) or user id (U..., or W... on Enterprise Grid) "
+                               "-- a user id opens the DM")
+    p_upload.add_argument("--file", required=True)
+    p_upload.add_argument("--title", default="", help="Display title (default: file name)")
+    comment = p_upload.add_mutually_exclusive_group()
+    comment.add_argument("--comment", default="", help="Message text shown with the file")
+    comment.add_argument("--comment-stdin", action="store_true",
+                         help="Read the comment from stdin (safe for backticks/$VAR/quotes)")
+    p_upload.add_argument("--thread-ts", default="")
+    p_upload.set_defaults(func=cmd_upload)
 
     return parser
 

@@ -273,6 +273,200 @@ def test_cmd_post_clean_message_no_warning():
     print("ok: cmd_post_clean_message_no_warning")
 
 
+
+class _FakeResp(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_upload_parses_company_flag_after_subcommand():
+    args = _parse(["upload", "--company", "amira", "--channel", "U1", "--file", "f.md"])
+    assert args.company == "amira" and args.channel == "U1" and args.func is sp.cmd_upload
+    print("ok: upload_parses_company_flag_after_subcommand")
+
+
+def test_upload_rejects_both_comment_flags():
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            _parse(["upload", "--channel", "C1", "--file", "f", "--comment", "a", "--comment-stdin"])
+            raised = False
+        except SystemExit:
+            raised = True
+    assert raised, "argparse must reject --comment and --comment-stdin together"
+    print("ok: upload_rejects_both_comment_flags")
+
+
+def test_upload_comment_is_optional():
+    args = _parse(["upload", "--channel", "C1", "--file", "f"])
+    assert sp._resolve_comment(args) == ""
+    print("ok: upload_comment_is_optional")
+
+
+def test_upload_comment_stdin_preserves_shell_metacharacters():
+    tricky = 'has `backticks`, $VARS and "quotes"'
+    args = _parse(["upload", "--channel", "C1", "--file", "f", "--comment-stdin"])
+    with mock.patch.object(sys, "stdin", _fake_stdin(tricky + "\n")):
+        assert sp._resolve_comment(args) == tricky
+    print("ok: upload_comment_stdin_preserves_shell_metacharacters")
+
+
+def test_resolve_channel_opens_dm_for_user_id_only():
+    calls = []
+
+    def fake_call(method, token, payload):
+        calls.append((method, payload))
+        return {"ok": True, "channel": {"id": "D9"}}
+
+    with mock.patch.object(sp, "_call", side_effect=fake_call):
+        for cid in ("C1", "D1", "G1"):
+            assert sp._resolve_channel("tok", cid) == cid
+        assert calls == [], "a channel id must not trigger conversations.open"
+        assert sp._resolve_channel("tok", "U1") == "D9"
+        assert sp._resolve_channel("tok", "W1") == "D9", "Enterprise Grid user ids start with W"
+    assert calls == [("conversations.open", {"users": "U1"}),
+                     ("conversations.open", {"users": "W1"})], calls
+    print("ok: resolve_channel_opens_dm_for_user_id_only")
+
+
+def test_call_form_sends_urlencoded_not_json():
+    """files.getUploadURLExternal and files.info answer invalid_arguments to a JSON body."""
+    seen = {}
+
+    def fake_urlopen(req, timeout=0):
+        seen["ct"] = req.get_header("Content-type")
+        seen["body"] = req.data
+        return _FakeResp(b'{"ok":true}')
+
+    with mock.patch.object(sp.urllib.request, "urlopen", side_effect=fake_urlopen):
+        resp = sp._call_form("files.info", "tok", {"file": "F1", "length": 52})
+    assert resp == {"ok": True}
+    assert seen["ct"].startswith("application/x-www-form-urlencoded"), seen["ct"]
+    assert seen["body"] == b"file=F1&length=52", seen["body"]
+    print("ok: call_form_sends_urlencoded_not_json")
+
+
+def test_share_ts_picks_the_target_channel_share():
+    """A file shared in several places lists every share; the permalink must pair the upload
+    channel with ITS ts, not the last ts seen."""
+    info = {"ok": True, "file": {"shares": {
+        "public": {"C7": [{"ts": "9.9"}]},
+        "private": {"D9": [{"ts": "1.5"}], "D2": [{"ts": "2.5"}]}}}}
+    with mock.patch.object(sp, "_call_form", return_value=info):
+        assert sp._share_ts("tok", "F1", "D9") == "1.5"
+        assert sp._share_ts("tok", "F1", "C7") == "9.9"
+        assert sp._share_ts("tok", "F1", "D0") == "", "no share in the target channel -> empty"
+    with mock.patch.object(sp, "_call_form", return_value={"ok": False, "error": "x"}):
+        assert sp._share_ts("tok", "F1", "D9") == ""
+    print("ok: share_ts_picks_the_target_channel_share")
+
+
+def test_cmd_upload_missing_upload_url_fails_before_posting_bytes():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "n.txt"
+        f.write_bytes(b"x")
+        args = _parse(["upload", "--channel", "C1", "--file", str(f)])
+        err = io.StringIO()
+        with mock.patch.object(sp, "_load_user_token", return_value="tok"), \
+             mock.patch.object(sp, "_call", side_effect=AssertionError("must not reach completeUpload")), \
+             mock.patch.object(sp, "_call_form", return_value={"ok": True}), \
+             mock.patch.object(sp.urllib.request, "urlopen", side_effect=AssertionError("must not POST bytes")), \
+             contextlib.redirect_stderr(err):
+            rc = sp.cmd_upload(args)
+    assert rc == 1 and "missing upload_url/file_id" in err.getvalue(), (rc, err.getvalue())
+    print("ok: cmd_upload_missing_upload_url_fails_before_posting_bytes")
+
+def test_cmd_upload_three_step_flow_and_permalink():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "note.md"
+        f.write_bytes(b"hello")
+        calls = []
+
+        def fake_call(method, token, payload):
+            calls.append((method, payload))
+            if method == "conversations.open":
+                return {"ok": True, "channel": {"id": "D9"}}
+            if method == "files.completeUploadExternal":
+                return {"ok": True, "files": [{"id": "F1"}]}
+            raise AssertionError("unexpected JSON call " + method)
+
+        def fake_call_form(method, token, fields):
+            calls.append((method, fields))
+            if method == "files.getUploadURLExternal":
+                return {"ok": True, "upload_url": "https://files.slack.com/up", "file_id": "F1"}
+            if method == "files.info":
+                return {"ok": True, "file": {"shares": {"private": {"D9": [{"ts": "1776114430.309819"}]}}}}
+            raise AssertionError("unexpected form call " + method)
+
+        uploaded = {}
+
+        def fake_urlopen(req, timeout=0):
+            uploaded["url"] = req.full_url
+            uploaded["body"] = req.data
+            return _FakeResp(b"OK - 5")
+
+        args = _parse(["upload", "--channel", "U1", "--file", str(f), "--comment", "hi"])
+        out = io.StringIO()
+        with mock.patch.object(sp, "_load_user_token", return_value="tok"), \
+             mock.patch.object(sp, "_call", side_effect=fake_call), \
+             mock.patch.object(sp, "_call_form", side_effect=fake_call_form), \
+             mock.patch.object(sp.urllib.request, "urlopen", side_effect=fake_urlopen), \
+             contextlib.redirect_stdout(out):
+            rc = sp.cmd_upload(args)
+    assert rc == 0, rc
+    assert [c[0] for c in calls] == ["conversations.open", "files.getUploadURLExternal",
+                                     "files.completeUploadExternal", "files.info"], calls
+    assert calls[1][1] == {"filename": "note.md", "length": 5}, calls[1]
+    assert uploaded == {"url": "https://files.slack.com/up", "body": b"hello"}, uploaded
+    assert calls[2][1] == {"files": [{"id": "F1", "title": "note.md"}], "channel_id": "D9",
+                           "initial_comment": "hi"}, calls[2]
+    text = out.getvalue()
+    assert "ok file_id=F1 channel=D9 bytes=5" in text, text
+    assert "permalink=https://amiralearning.slack.com/archives/D9/p1776114430309819" in text, text
+    print("ok: cmd_upload_three_step_flow_and_permalink")
+
+
+def test_cmd_upload_missing_file_fails_before_any_api_call():
+    """No token load (it can sys.exit and would mask the real error) and no Slack call
+    (conversations.open would open a DM as a side effect) for a file that cannot be read."""
+    args = _parse(["upload", "--channel", "U1", "--file", "does/not/exist.md"])
+    with mock.patch.object(sp, "_load_user_token", side_effect=AssertionError("must not load token")), \
+         mock.patch.object(sp, "_call", side_effect=AssertionError("must not call the API")), \
+         mock.patch.object(sp, "_call_form", side_effect=AssertionError("must not call the API")), \
+         contextlib.redirect_stderr(io.StringIO()):
+        rc = sp.cmd_upload(args)
+    assert rc == 1, rc
+    print("ok: cmd_upload_missing_file_fails_before_any_api_call")
+
+
+def test_cmd_upload_complete_failure_returns_one():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "n.txt"
+        f.write_bytes(b"x")
+
+        def fake_call(method, token, payload):
+            return {"ok": False, "error": "not_in_channel"}
+
+        def fake_call_form(method, token, fields):
+            return {"ok": True, "upload_url": "https://files.slack.com/up", "file_id": "F1"}
+
+        args = _parse(["upload", "--channel", "C1", "--file", str(f)])
+        err = io.StringIO()
+        with mock.patch.object(sp, "_load_user_token", return_value="tok"), \
+             mock.patch.object(sp, "_call", side_effect=fake_call), \
+             mock.patch.object(sp, "_call_form", side_effect=fake_call_form), \
+             mock.patch.object(sp.urllib.request, "urlopen", return_value=_FakeResp(b"OK")), \
+             contextlib.redirect_stderr(err):
+            rc = sp.cmd_upload(args)
+    assert rc == 1 and "not_in_channel" in err.getvalue(), (rc, err.getvalue())
+    print("ok: cmd_upload_complete_failure_returns_one")
+
+
 if __name__ == "__main__":
     # Discover, never hand-list. A hand-maintained call list silently skips any test added
     # without also editing the list, and still prints ALL PASS.
