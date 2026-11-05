@@ -6,13 +6,15 @@ Reads the stored refresh token, exchanges it via `oauth.v2.access`
 (grant_type=refresh_token), and atomically rewrites the token + env files.
 No browser. Intended to run on a schedule (Windows Task Scheduler, cron).
 
-Requires a custom Slack app with `token_rotation_enabled: true` and the client
-secret stored by slack_secret.py (during the one-time interactive setup) --
-DPAPI-sealed on Windows, or a plaintext `client_secret` field in the creds file
-on other platforms.
+Tokens from the official Slack MCP app (a public PKCE client) refresh with the
+client_id alone. A custom Slack app needs `token_rotation_enabled: true` and the
+client secret stored by slack_secret.py (during the one-time interactive setup)
+-- DPAPI-sealed on Windows, or a plaintext `client_secret` field in the creds
+file on other platforms.
 
-Refresh tokens are single-use: each refresh returns a new one, so exactly one
-refresher may run against a token. Do not run this concurrently with itself.
+Refresh tokens are single-use: each refresh returns a new one. A lock file next
+to the token file serializes runs, and the token is read only after the lock is
+held, so a run that waited sees the token the previous run wrote.
 
 If refresh fails (refresh token revoked / scopes changed), falls back to the
 interactive slack_oauth.py, which opens the browser for a fresh consent.
@@ -21,8 +23,11 @@ Usage:
     python scripts/slack_refresh.py --skill slack
     python scripts/slack_refresh.py --skill slack --company amira
     python scripts/slack_refresh.py --skill slack --check-only   # report, don't refresh
+    python scripts/slack_refresh.py --skill slack --if-needed    # before each write
 """
 import argparse
+import contextlib
+import errno
 import json
 import os
 import subprocess
@@ -35,8 +40,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import slack_secret  # creds store: load_client_creds() decrypts the DPAPI-sealed secret
+from slack_oauth import OFFICIAL_CLIENT_ID
 
 TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+FRESH_MARGIN = timedelta(minutes=30)  # --if-needed leaves a token with more than this left
 
 
 def _token_path(company: str, skill: str) -> Path:
@@ -49,12 +56,14 @@ def _token_path(company: str, skill: str) -> Path:
 
 def _refresh_one(refresh_token: str, client_id: str, client_secret: str) -> dict:
     """Exchange a single refresh token for a fresh access + refresh token."""
-    data = urllib.parse.urlencode({
+    fields = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
-        "client_secret": client_secret,
-    }).encode("utf-8")
+    }
+    if client_secret:  # public (PKCE) clients such as the official Slack MCP app have none
+        fields["client_secret"] = client_secret
+    data = urllib.parse.urlencode(fields).encode("utf-8")
     req = urllib.request.Request(
         TOKEN_URL,
         data=data,
@@ -95,6 +104,32 @@ def _reauth(token_data: dict, client_id: str, company: str, skill: str) -> int:
     return subprocess.call(cmd)
 
 
+@contextlib.contextmanager
+def _refresh_lock(token_file: Path):
+    """Exclusive cross-process lock, so two runs never spend the same refresh token."""
+    with open(token_file.with_suffix(".lock"), "a+") as f:
+        if os.name == "nt":
+            import msvcrt
+            f.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError as e:
+                    if e.errno != errno.EDEADLK:  # EDEADLK = still held after LK_LOCK's ~10 s
+                        raise
+                    print("Waiting for another slack_refresh run to finish...", file=sys.stderr)
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX)
+            yield  # closing the file releases the flock
+
+
 def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -129,6 +164,9 @@ def main() -> int:
     parser.add_argument("--skill", default="slack")
     parser.add_argument("--check-only", action="store_true",
                         help="Report token status and exit without refreshing")
+    parser.add_argument("--if-needed", action="store_true",
+                        help="Skip the refresh when the token does not expire or has more "
+                             f"than {int(FRESH_MARGIN.total_seconds() // 60)} minutes left")
     args = parser.parse_args()
 
     token_file = _token_path(args.company, args.skill)
@@ -138,6 +176,11 @@ def main() -> int:
               f"--skill {args.skill}", file=sys.stderr)
         return 1
 
+    with _refresh_lock(token_file):
+        return _refresh(token_file, args)
+
+
+def _refresh(token_file: Path, args: argparse.Namespace) -> int:
     try:
         token_data = json.loads(token_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
@@ -153,35 +196,49 @@ def main() -> int:
         print(f"has bot_refresh_token:  {bool(token_data.get('bot_refresh_token'))}")
         return 0
 
+    if args.if_needed:
+        if not (token_data.get("user_refresh_token") or token_data.get("bot_refresh_token")):
+            print("Token does not rotate; nothing to refresh.")
+            return 0
+        if expires_at and datetime.fromisoformat(expires_at) - datetime.now(timezone.utc) > FRESH_MARGIN:
+            print(f"Token still fresh, expires_at {expires_at}")
+            return 0
+
     if not (token_data.get("user_refresh_token") or token_data.get("bot_refresh_token")):
         print("ERROR: no refresh token stored. This token was not issued by a "
               "rotation-enabled app. Re-run slack_oauth.py against your custom app.",
               file=sys.stderr)
         return 1
 
-    creds = slack_secret.load_client_creds(args.company, args.skill)
-    client_id = creds.get("client_id") or token_data.get("client_id", "")
-    if not client_id:
-        err = creds.get("client_secret_error")  # a corrupt creds file lacks client_id too
-        if err:
-            print(f"ERROR: {err}", file=sys.stderr)
-        else:
-            print("ERROR: no client_id found in the creds store or token file; cannot refresh "
-                  "(Slack would reject it as invalid_client_id). Re-run slack_secret.py --skill "
-                  f"{args.skill} then slack_oauth.py --skill {args.skill} to set it up.", file=sys.stderr)
-        return 1
-    client_secret = creds.get("client_secret", "")
-    if not client_secret:
-        err = creds.get("client_secret_error")
-        if err:
-            print(f"ERROR: {err}", file=sys.stderr)  # present-but-unreadable: real cause
-        else:
+    if token_data.get("client_id") == OFFICIAL_CLIENT_ID:
+        # Official Slack MCP app: a public PKCE client, refreshed with client_id alone.
+        # A custom-app creds file left over for this skill must not override it.
+        client_id, client_secret = OFFICIAL_CLIENT_ID, ""
+    else:
+        creds = slack_secret.load_client_creds(args.company, args.skill)
+        client_id = creds.get("client_id") or token_data.get("client_id", "")
+        if not client_id:
+            err = creds.get("client_secret_error")  # a corrupt creds file lacks client_id too
+            if err:
+                print(f"ERROR: {err}", file=sys.stderr)
+            else:
+                print("ERROR: no client_id found in the creds store or token file; cannot refresh "
+                      "(Slack would reject it as invalid_client_id). Re-run slack_secret.py --skill "
+                      f"{args.skill} then slack_oauth.py --skill {args.skill} to set it up.", file=sys.stderr)
+            return 1
+        client_secret = creds.get("client_secret", "")
+        if not client_secret:  # a custom app always needs its secret
+            err = creds.get("client_secret_error")
+            if err:
+                print(f"ERROR: {err}", file=sys.stderr)  # present-but-unreadable: real cause
+                return 1
             creds_file = slack_secret.creds_path(args.company, args.skill)
             print(f"ERROR: no client secret stored (looked in {creds_file}). "
                   f"Run slack_secret.py --skill {args.skill} to store it.", file=sys.stderr)
-        return 1
+            return 1
 
     refreshed_any = False
+    new_expires_at = ""
     for tok_key, refresh_key in (("user_token", "user_refresh_token"),
                                  ("bot_token", "bot_refresh_token")):
         rt = token_data.get(refresh_key)
@@ -199,7 +256,7 @@ def main() -> int:
         token_data[refresh_key] = resp.get("refresh_token", rt)
         exp_in = resp.get("expires_in")
         if exp_in:
-            token_data["expires_at"] = (
+            new_expires_at = (
                 datetime.now(timezone.utc) + timedelta(seconds=int(exp_in))
             ).isoformat()
         token_data["obtained_at"] = datetime.now(timezone.utc).isoformat()
@@ -211,6 +268,11 @@ def main() -> int:
     if not refreshed_any:
         print("ERROR: nothing refreshed.", file=sys.stderr)
         return 1
+    if new_expires_at:
+        # Advance expires_at only once every token refreshed: after a partial failure
+        # it stays stale, so the next --if-needed run retries the token that failed.
+        token_data["expires_at"] = new_expires_at
+        _write_token_and_env(token_file, token_data, args.skill)
 
     # Don't print token material -- this goes to a persisted log every 8h.
     kind = "user" if token_data.get("user_token") else ("bot" if token_data.get("bot_token") else "?")

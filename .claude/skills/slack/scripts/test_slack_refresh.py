@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Self-check for slack_refresh. Run: python test_slack_refresh.py"""
 import base64
+import contextlib
 import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -119,6 +121,10 @@ def test_partial_failure_persists_earlier_rotation():
         data = json.loads(tok.read_text(encoding="utf-8"))
         assert data["user_token"] == "xoxp-NEW", data["user_token"]          # persisted
         assert data["user_refresh_token"] == "xoxe-u-NEW", data["user_refresh_token"]
+        assert "expires_at" not in data, "expiry must not advance while the bot token is stale"
+        with mock.patch.object(sr, "_refresh_one", side_effect=[ok, ok]) as m:
+            rc = _run(["--skill", "slack", "--if-needed"])
+        assert rc == 0 and m.call_count == 2, (rc, m.call_count)  # retried, not skipped
         print("ok: partial_failure_persists_earlier_rotation")
 
 
@@ -245,6 +251,117 @@ def test_missing_refresh_token_errors():
         print("ok: missing_refresh_token_errors")
 
 
+def test_no_creds_file_refreshes_without_secret():
+    """Token from the official Slack MCP app (public PKCE client): no creds file,
+    official client_id in the token file -> refresh with an empty secret, not an error."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
+        d = home / ".claude" / "companies" / "amira" / "data" / "tokens" / "slack"
+        d.mkdir(parents=True, exist_ok=True)
+        tok = d / "slack.json"
+        tok.write_text(json.dumps({
+            "ok": True, "user_token": "xoxp-old", "user_refresh_token": "xoxe-old",
+            "client_id": sr.OFFICIAL_CLIENT_ID,
+        }), encoding="utf-8")  # no slack-app-creds.json
+        resp = {"ok": True, "access_token": "xoxp-NEW", "refresh_token": "xoxe-NEW",
+                "expires_in": 43200}
+        with mock.patch.object(sr, "_refresh_one", return_value=resp) as m:
+            rc = _run(["--skill", "slack"])
+        assert rc == 0, rc
+        assert m.call_args.args == ("xoxe-old", sr.OFFICIAL_CLIENT_ID, ""), m.call_args.args
+        data = json.loads(tok.read_text(encoding="utf-8"))
+        assert data["user_token"] == "xoxp-NEW", data["user_token"]
+        assert data["user_refresh_token"] == "xoxe-NEW", data["user_refresh_token"]
+        print("ok: no_creds_file_refreshes_without_secret")
+
+
+def test_official_token_ignores_leftover_creds():
+    """A custom-app creds file left for the skill must not hijack an official-app token."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
+        tok = _seed(home)  # creds file: client_id "cid", secret "sek"
+        data = json.loads(tok.read_text(encoding="utf-8"))
+        data["client_id"] = sr.OFFICIAL_CLIENT_ID
+        tok.write_text(json.dumps(data), encoding="utf-8")
+        resp = {"ok": True, "access_token": "xoxp-NEW", "refresh_token": "xoxe-NEW"}
+        with mock.patch.object(sr, "_refresh_one", return_value=resp) as m:
+            rc = _run(["--skill", "slack"])
+        assert rc == 0, rc
+        assert m.call_args.args == ("xoxe-old", sr.OFFICIAL_CLIENT_ID, ""), m.call_args.args
+        print("ok: official_token_ignores_leftover_creds")
+
+
+def test_custom_id_without_creds_errors():
+    """A custom-app token with no stored secret gets the slack_secret.py hint, not a
+    secretless request that Slack rejects."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
+        tok = _seed(home)
+        (tok.parent / "slack-app-creds.json").unlink()
+        with mock.patch.object(sr, "_refresh_one") as m:
+            rc = _run(["--skill", "slack"])
+        assert rc == 1, rc
+        assert not m.called, "must not send a refresh without the custom app's secret"
+        print("ok: custom_id_without_creds_errors")
+
+
+def test_if_needed_skips_fresh_and_non_expiring():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
+        tok = _seed(home)
+        data = json.loads(tok.read_text(encoding="utf-8"))
+        fresh = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        for exp, refresh in ((fresh, "xoxe-old"), ("", "")):  # fresh; non-rotating (no refresh token)
+            data.update(expires_at=exp, user_refresh_token=refresh)
+            tok.write_text(json.dumps(data), encoding="utf-8")
+            with mock.patch.object(sr, "_refresh_one") as m:
+                rc = _run(["--skill", "slack", "--if-needed"])
+            assert rc == 0 and not m.called, (exp, rc)
+        data["user_refresh_token"] = "xoxe-old"
+        # near expiry -> refreshes
+        data["expires_at"] = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        tok.write_text(json.dumps(data), encoding="utf-8")
+        resp = {"ok": True, "access_token": "xoxp-NEW", "refresh_token": "xoxe-NEW"}
+        with mock.patch.object(sr, "_refresh_one", return_value=resp) as m:
+            rc = _run(["--skill", "slack", "--if-needed"])
+        assert rc == 0 and m.called, rc
+        print("ok: if_needed_skips_fresh_and_non_expiring")
+
+
+def test_waiter_rereads_token_after_lock():
+    """A run that waited on the lock must see the token the holder just wrote, not
+    spend the refresh token it would have read before waiting."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        os.environ["USERPROFILE"] = str(home)
+        os.environ["HOME"] = str(home)
+        tok = _seed(home)  # expired token, refresh token xoxe-old
+        real_lock = sr._refresh_lock
+
+        @contextlib.contextmanager
+        def lock_after_other_run(token_file):
+            with real_lock(token_file):
+                data = json.loads(token_file.read_text(encoding="utf-8"))
+                data.update(user_refresh_token="xoxe-ROTATED",
+                            expires_at=(datetime.now(timezone.utc) + timedelta(hours=12)).isoformat())
+                token_file.write_text(json.dumps(data), encoding="utf-8")
+                yield
+
+        with mock.patch.object(sr, "_refresh_lock", lock_after_other_run), \
+                mock.patch.object(sr, "_refresh_one") as m:
+            rc = _run(["--skill", "slack", "--if-needed"])
+        assert rc == 0 and not m.called, rc
+        print("ok: waiter_rereads_token_after_lock")
+
+
 if __name__ == "__main__":
     test_refresh_rotates_token()
     test_sealed_secret_is_decrypted()
@@ -256,4 +373,9 @@ if __name__ == "__main__":
     test_missing_client_id_errors()
     test_resolve_client_logic()
     test_missing_refresh_token_errors()
+    test_no_creds_file_refreshes_without_secret()
+    test_official_token_ignores_leftover_creds()
+    test_custom_id_without_creds_errors()
+    test_if_needed_skips_fresh_and_non_expiring()
+    test_waiter_rereads_token_after_lock()
     print("ALL PASS")

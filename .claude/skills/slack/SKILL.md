@@ -160,6 +160,14 @@ If `slack_connect: true`:
 
 **NEVER use `mcp__slack__slack_send_message`, `mcp__slack__slack_update_message`, `mcp__slack__slack_delete_message`, or any `claude_ai_Slack__*` tool for sends, edits, or deletes.** Those post through the Claude Slack app (`A08SF47R6P4`), which stamps every message with a "sent using Claude" watermark and has mangled non-ASCII punctuation (em-dash -> mojibake). **ALWAYS use `scripts/slack_post.py`** (direct Slack Web API with the stored user token: `chat.postMessage`/`chat.update`/`chat.delete` for messages, `files.getUploadURLExternal`/`files.completeUploadExternal` for attachments) for every write operation, file attachments included: `python scripts/slack_post.py upload --company <company> --channel <channel_or_user_id> --file <path> [--title T] [--comment TEXT | --comment-stdin] [--thread-ts TS]` -- a user id (`U...`, or `W...` on Enterprise Grid) opens the DM for you. This is permanent — do not revert to the MCP tools for writes even if they seem more convenient.
 
+The stored user token rotates and expires about 12 h after it is issued. **Before every write, run
+`python scripts/slack_refresh.py --company <company> --if-needed`** (from the skill directory). It
+returns at once when the token has more than 30 minutes left or does not expire. Otherwise it swaps
+the refresh token for a fresh pair with no browser: a token from the official Slack MCP app (a public
+PKCE client) needs no client secret; a custom app needs the secret stored by `slack_secret.py`.
+Parallel runs are safe: a lock file serializes them, and a run that waited sees the fresh token. If
+it prints `invalid_grant` it opens the browser for a fresh consent; tell the user.
+
 Read-only `mcp__slack__*` calls (`slack_read_channel`, `slack_read_thread`, `slack_search_*`, `slack_read_user_profile`, etc.) are unaffected — reads don't watermark and stay on the MCP.
 
 ### Never Put `<angle-bracket>` Placeholders In Or Near A URL
