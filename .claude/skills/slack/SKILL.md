@@ -156,9 +156,13 @@ If `slack_connect: true`:
 - Instead, provide: permalink + copyable message text
 - Error if attempted: `mcp_externally_shared_channel_restricted`
 
-### Never Send/Edit/Delete via the Claude App MCP
+### Sending: the Script First, the Claude App as Fallback
 
-**NEVER use `mcp__slack__slack_send_message`, `mcp__slack__slack_update_message`, `mcp__slack__slack_delete_message`, or any `claude_ai_Slack__*` tool for sends, edits, or deletes.** Those post through the Claude Slack app (`A08SF47R6P4`), which stamps every message with a "sent using Claude" watermark and has mangled non-ASCII punctuation (em-dash -> mojibake). **ALWAYS use `scripts/slack_post.py`** (direct Slack Web API with the stored user token: `chat.postMessage`/`chat.update`/`chat.delete` for messages, `files.getUploadURLExternal`/`files.completeUploadExternal` for attachments) for every write operation, file attachments included: `python scripts/slack_post.py upload --company <company> --channel <channel_or_user_id> --file <path> [--title T] [--comment TEXT | --comment-stdin] [--thread-ts TS]` -- a user id (`U...`, or `W...` on Enterprise Grid) opens the DM for you. This is permanent — do not revert to the MCP tools for writes even if they seem more convenient.
+**First choice: `scripts/slack_post.py`** (direct Slack Web API with the stored user token). It posts as
+the user with no watermark and keeps non-ASCII punctuation intact. It is the only path for edits, deletes and
+file attachments (`chat.update`/`chat.delete`; `files.getUploadURLExternal`/`files.completeUploadExternal`):
+`python scripts/slack_post.py upload --company <company> --channel <channel_or_user_id> --file <path> [--title T] [--comment TEXT | --comment-stdin] [--thread-ts TS]`
+-- a user id (`U...`, or `W...` on Enterprise Grid) opens the DM for you.
 
 The stored user token rotates and expires about 12 h after it is issued. **Before every write, run
 `python scripts/slack_refresh.py --company <company> --if-needed`** (from the skill directory). It
@@ -167,6 +171,22 @@ the refresh token for a fresh pair with no browser: a token from the official Sl
 PKCE client) needs no client secret; a custom app needs the secret stored by `slack_secret.py`.
 Parallel runs are safe: a lock file serializes them, and a run that waited sees the fresh token. If
 it prints `invalid_grant` it opens the browser for a fresh consent; tell the user.
+
+**Fallback: the Claude Slack app.** When the script fails on the token (`token_expired`, `invalid_auth`,
+`token_revoked`, `not_authed`, no token file), run `python scripts/slack_refresh.py --company <company>`
+once **without** `--if-needed` (that flag trusts `expires_at` and cannot see a revoked token), then retry the
+script. If it still fails on the token, whatever the refresh printed, send the message or thread reply with
+the Slack MCP connector's `slack_send_message` (the tool name varies by install: `mcp__slack__slack_send_message`,
+`mcp__<connector-id>__slack_send_message`). Its "Sent using Claude" watermark is acceptable (decided
+2026-10-23), so use it instead of handing the user text to paste. With this path:
+
+- Write ASCII punctuation: `-` for an em-dash, `->` for an arrow. The Claude app has turned em-dashes into mojibake.
+- The connector takes standard markdown: `**bold**`, `[label](url)`. Mentions stay `<@UID>`.
+- Read the message back, as for any write.
+- Edits, deletes and attachments do not fall back: if the script cannot do them, tell the user why.
+- Tell the user, every time: the send went through the Claude app with its watermark, the token error the
+  script printed, and the fix (store the custom app's secret with `slack_secret.py`, or re-consent with
+  `slack_oauth.py`). Otherwise the broken token stays hidden and every later send carries the watermark.
 
 Read-only `mcp__slack__*` calls (`slack_read_channel`, `slack_read_thread`, `slack_search_*`, `slack_read_user_profile`, etc.) are unaffected — reads don't watermark and stay on the MCP.
 
@@ -236,7 +256,7 @@ Post a message to a channel.
 **Input**: `send <channel> <message>` — channel is name (strip `#`) or ID
 1. If channel doesn't start with `C`, resolve name to ID via `mcp__slack__slack_search_channels`
 2. Check `slack_connect` — if true, provide permalink + copyable message instead (see Critical Rules)
-3. Run, passing `--company <company>` (the company resolved per [Data Files](#data-files); omitting it silently defaults to `amira`) and piping the message body through stdin so shell metacharacters (backticks, `$VAR`, quotes) in the text can't corrupt the command or get shell-interpreted — **never** `mcp__slack__slack_send_message` (see Critical Rules → Never Send/Edit/Delete via the Claude App MCP):
+3. Run, passing `--company <company>` (the company resolved per [Data Files](#data-files); omitting it silently defaults to `amira`) and piping the message body through stdin so shell metacharacters (backticks, `$VAR`, quotes) in the text can't corrupt the command or get shell-interpreted. If the script still fails on the token after one plain refresh, send with the Slack MCP connector instead (see Critical Rules → Sending: the Script First, the Claude App as Fallback):
    ```bash
    python scripts/slack_post.py post --company <company> --channel <channel_id> --text-stdin <<'EOF'
    <text>
@@ -264,7 +284,7 @@ Read a thread's replies or post a reply.
 1. Resolve channel name to ID if needed
 2. Call `mcp__slack__slack_read_thread` with channel_id and thread_ts
 3. Display parent + all replies with timestamps and authors
-4. If reply_text provided: check `slack_connect`, then run, passing `--company <company>` (see [Data Files](#data-files)) and the reply text via stdin — **never** `mcp__slack__slack_send_message`:
+4. If reply_text provided: check `slack_connect`, then run, passing `--company <company>` (see [Data Files](#data-files)) and the reply text via stdin (fallback on a token failure: the Slack MCP connector with `thread_ts`, see Critical Rules → Sending):
    ```bash
    python scripts/slack_post.py post --company <company> --channel <channel_id> --thread-ts <thread_ts> --text-stdin <<'EOF'
    <text>
